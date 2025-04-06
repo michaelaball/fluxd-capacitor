@@ -86,7 +86,7 @@ def process_job(job_id, pipe):
         negative_prompt = job_data.get("negative_prompt", None)
         height = job_data.get("height", 1024)
         width = job_data.get("width", 1024)
-        num_inference_steps = job_data.get("num_inference_steps", 5)
+        num_inference_steps = job_data.get("num_inference_steps", 1)
         guidance_scale = job_data.get("guidance_scale", 7.5)
         num_images = min(job_data.get("num_images", 1), 4)  # Limit to 4 images max
         seed = job_data.get("seed", int(time.time()))

@@ -20,7 +20,6 @@ class S3Storage:
         self.secret_key = os.getenv('S3_SECRET_KEY')
         self.bucket_name = os.getenv('S3_BUCKET_NAME')
         self.region = os.getenv('S3_REGION', 'us-east-1')
-        self.bucket_path = os.getenv('S3_BUCKET_PATH')
         self.endpoint = os.getenv('S3_ENDPOINT')
         self.include_base64 = os.getenv('INCLUDE_BASE64', 'false').lower() == 'true'
         
@@ -63,7 +62,7 @@ class S3Storage:
             image.save(local_path, format="PNG")
             
             # Upload to S3
-            s3_key = f"{self.bucket_path}/{filename}"
+            s3_key = f"images/{filename}"
             
             # Check if we should use public-read ACL or pre-signed URLs
             use_presigned = os.getenv('USE_PRESIGNED_URLS', 'true').lower() == 'true'
@@ -134,3 +133,31 @@ class S3Storage:
     def should_include_base64(self):
         """Check if base64 encoding should be included"""
         return self.include_base64
+        
+    def generate_presigned_url(self, s3_key):
+        """
+        Generate a pre-signed URL for an S3 object with configurable expiration time
+        
+        Args:
+            s3_key: The key of the object in S3
+            
+        Returns:
+            str: A pre-signed URL with time-limited access
+        """
+        # Get expiration time from environment variable (default: 24 hours)
+        expiry_seconds = int(os.getenv('URL_EXPIRATION_SECONDS', 86400))
+        
+        try:
+            # Generate the pre-signed URL
+            response = self.client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': s3_key
+                },
+                ExpiresIn=expiry_seconds
+            )
+            return response
+        except ClientError as e:
+            print(f"Error generating pre-signed URL: {e}")
+            raise
