@@ -400,11 +400,11 @@ class SDXLWorker(threading.Thread):
             
             # Set up generator for reproducibility
             generator = None
-            # if seed is not None:
-            #     generator = torch.Generator(device=self.device).manual_seed(seed)
+            if seed is not None:
+                generator = torch.Generator(device=self.device).manual_seed(seed)
             
             # Generate the image(s)
-            torch.cuda.set_device(self.gpu_index)
+            # torch.cuda.set_device(self.gpu_index)
             images = self.pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
