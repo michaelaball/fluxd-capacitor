@@ -98,10 +98,23 @@ class SDXLWorker(threading.Thread):
                 
                 # Clear CUDA cache after processing
                 if self.gpu_index >= 0:
-                    torch.cuda.empty_cache()
+                    try:
+                        import torch
+                        torch.cuda.empty_cache()
+                        print(f"Cleared CUDA cache on {self.device}")
+                        
+                        # Print memory usage for debugging
+                        if hasattr(torch.cuda, 'memory_allocated'):
+                            allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                            reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                            print(f"GPU {self.gpu_index} memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                    except Exception as e:
+                        print(f"Error clearing CUDA cache: {e}")
                 
             except Exception as e:
                 print(f"Error in worker thread for device {self.device}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Brief delay before continuing
                 time.sleep(1)
     
@@ -110,161 +123,112 @@ class SDXLWorker(threading.Thread):
         self.running = False
 
     def initialize_model(self):
-        """Initialize the FLUX.1-dev model on the specific GPU"""
+        """Initialize the FLUX.1-dev model with GGUF quantization on the specific GPU"""
         try:
-            from diffusers import FluxPipeline
             import torch
+            import os
+            from huggingface_hub import hf_hub_download
             
-            # Set device
+            # Clear CUDA cache before initialization
             if self.gpu_index >= 0:
+                torch.cuda.empty_cache()
                 torch.cuda.set_device(self.gpu_index)
             
             print(f"Using device: {self.device}")
             
-            # Load the FLUX pipeline (hardcoded)
-            model_id = "black-forest-labs/FLUX.1-dev"
+            # Import diffusers components
+            from diffusers import FluxPipeline, FluxTransformer2DModel, GGUFQuantizationConfig
+            
+            # Define GGUF model details
+            gguf_repo = "city96/FLUX.1-dev-gguf"
+            gguf_filename = "flux1-dev-Q8_0.gguf"  # Using 8-bit quantization for good balance
+            
+            # Set up cache directory
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "models")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            print(f"Downloading/loading GGUF model from: {gguf_repo}/{gguf_filename}")
+            
+            # Download GGUF file if not already cached
+            gguf_path = hf_hub_download(
+                repo_id=gguf_repo,
+                filename=gguf_filename,
+                cache_dir=cache_dir
+            )
+            
+            print(f"Using GGUF model from: {gguf_path}")
             
             # Determine torch dtype based on device
             if self.gpu_index >= 0:
-                # Use bfloat16 as specified
-                torch_dtype = torch.bfloat16
+                # First try bfloat16, fall back to float16 if not supported
+                if torch.cuda.is_bf16_supported():
+                    torch_dtype = torch.bfloat16
+                    compute_dtype = torch.bfloat16
+                    print("Using bfloat16 precision")
+                else:
+                    torch_dtype = torch.float16
+                    compute_dtype = torch.float16
+                    print("bfloat16 not supported, using float16 precision")
             else:
                 torch_dtype = torch.float32
-                
-            self.pipe = FluxPipeline.from_pretrained(
-                model_id,
-                torch_dtype=torch_dtype
+                compute_dtype = torch.float32
+                print("Using float32 precision (CPU mode)")
+            
+            # Create the transformer from the GGUF file
+            transformer = FluxTransformer2DModel.from_single_file(
+                gguf_path,
+                quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
+                torch_dtype=torch_dtype,
             )
             
-            # Set the model to device
+            print("Quantized transformer model loaded successfully")
+            
+            # Create the full pipeline, replacing the transformer with our quantized version
+            self.pipe = FluxPipeline.from_pretrained(
+                "black-forest-labs/FLUX.1-dev",
+                transformer=transformer,
+                torch_dtype=torch_dtype,
+                use_safetensors=True,
+                low_cpu_mem_usage=True,
+            )
+            
+            # Move to device
             if self.gpu_index >= 0:
-                self.pipe.enable_model_cpu_offload()  # Offload to save VRAM
+                self.pipe = self.pipe.to(self.device)
+                
+                # Enable attention slicing for additional memory savings
+                self.pipe.enable_attention_slicing(slice_size="auto")
+                
+                # Try to enable xformers memory efficiency if available
+                try:
+                    import xformers
+                    self.pipe.enable_xformers_memory_efficient_attention()
+                    print("Enabled xformers memory-efficient attention")
+                except ImportError:
+                    print("Xformers not available, using standard attention")
             else:
                 self.pipe = self.pipe.to(self.device)
             
-            print(f"FLUX.1-dev model initialized successfully on {self.device}")
+            # Clear cache after model loading
+            if self.gpu_index >= 0:
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, 'memory_allocated'):
+                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                    print(f"GPU {self.gpu_index} memory after loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
             
-        except Exception as e:
-            print(f"Error initializing model on {self.device}: {e}")
-            raise
-            # Add this code to the SDXLWorker class in worker.py
-
-    
-    # Add this code to the SDXLWorker class in worker.py
-
-
-    # Add this code to the SDXLWorker class in worker.py
-
-    def _load_lora_models(self, lora_models, lora_strengths):
-        """
-        Load LoRA models into the pipeline
-        
-        Args:
-            lora_models (list): List of LoRA model names
-            lora_strengths (list): List of LoRA strength values
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            import os
-            from pathlib import Path
-            from storage import S3Storage
-            
-            # Track loaded LoRAs
-            if not hasattr(self, 'loaded_loras'):
-                self.loaded_loras = {}
-                
-            print(f"Loading LoRA models: {lora_models} with strengths: {lora_strengths}")
-            
-            # Check if the same models with same strengths are already loaded
-            current_loras = {model: strength for model, strength in zip(lora_models, lora_strengths)}
-            if self.loaded_loras == current_loras:
-                print("Same LoRA models already loaded with same strengths, skipping reload")
-                return True
-                
-            # Initialize storage handler
-            storage = S3Storage()
-            
-            # Define local directory for LoRA models
-            lora_dir = Path("./loras")
-            
-            # Download LoRA models from S3
-            downloaded_files = storage.download_specific_files(
-                lora_models,
-                "loras/",
-                str(lora_dir)
-            )
-            
-            if len(downloaded_files) != len(lora_models):
-                print(f"Warning: Not all LoRA models were downloaded. Expected {len(lora_models)}, got {len(downloaded_files)}")
-            
-            # Unload any existing LoRA weights
-            if hasattr(self.pipe, "unload_lora_weights"):
-                print("Unloading previous LoRA weights")
-                self.pipe.unload_lora_weights()
-            
-            # Keep track of adapter names and weights for scaling
-            adapter_names = []
-            adapter_weights = []
-            
-            # Load each LoRA
-            for i, model_name in enumerate(lora_models):
-                if not model_name.endswith('.safetensors'):
-                    file_name = f"{model_name}.safetensors"
-                else:
-                    file_name = model_name
-                    
-                model_path = lora_dir / file_name
-                if model_path.exists():
-                    strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
-                    print(f"Loading LoRA {model_name} with strength {strength}")
-                    
-                    # Load the LoRA weights with default adapter name
-                    # Load with cross_attention_kwargs to apply scale directly
-                    self.pipe.load_lora_weights(
-                        str(model_path),
-                        cross_attention_kwargs={"scale": strength}
-                    )
-                    
-                    # The adapter name might be assigned as "default_i" where i is the index
-                    # We'll handle this in a separate step by checking available adapters
-                else:
-                    print(f"Warning: LoRA file not found: {model_path}")
-            
-            # Get available adapters and set their weights
-            try:
-                # Different models store adapters in different ways
-                if hasattr(self.pipe, "get_active_adapters"):
-                    adapters = self.pipe.get_active_adapters()
-                    print(f"Available adapters: {adapters}")
-                    
-                    if adapters:
-                        # Set all adapters to full strength (they already have scale applied)
-                        self.pipe.set_adapters(adapters, adapter_weights=[1.0] * len(adapters))
-                elif hasattr(self.pipe.unet, "peft_config"):
-                    # Print available adapters from PEFT config
-                    if hasattr(self.pipe.unet, "peft_config"):
-                        adapters = list(self.pipe.unet.peft_config.keys())
-                        print(f"UNet adapters: {adapters}")
-                    
-                    if hasattr(self.pipe.text_encoder, "peft_config"):
-                        adapters = list(self.pipe.text_encoder.peft_config.keys())
-                        print(f"Text encoder adapters: {adapters}")
-            except Exception as e:
-                print(f"Error identifying or setting adapters: {e}")
-            
-            # Update loaded_loras dictionary
-            self.loaded_loras = current_loras
-            print("LoRA loading complete")
+            print(f"FLUX.1-dev GGUF quantized model initialized successfully on {self.device}")
             return True
             
         except Exception as e:
-            print(f"Error loading LoRA models: {e}")
+            print(f"Error initializing GGUF quantized model: {e}")
             import traceback
             traceback.print_exc()
             return False
-    
+        except Exception as e:
+            print(f"Error initializing model on {self.device}: {e}")
+            raise
+
     def process_job(self, job_id):
         """Process a single job"""
         try:
@@ -293,28 +257,6 @@ class SDXLWorker(threading.Thread):
             # Extract parameters with defaults, handling string inputs
             prompt = job_data.get("prompt", "")
             negative_prompt = job_data.get("negative_prompt", "")
-            
-            # Handle LoRA models and strengths
-            lora_models = []
-            lora_strengths = []
-            
-            if "lora_model" in job_data and job_data["lora_model"]:
-                lora_models = job_data["lora_model"].split(',')
-                lora_models = [model.strip() for model in lora_models]
-                
-                if "lora_strength" in job_data and job_data["lora_strength"]:
-                    lora_strengths = job_data["lora_strength"].split(',')
-                    lora_strengths = [strength.strip() for strength in lora_strengths]
-                    
-                    # Ensure we have a strength value for each model
-                    if len(lora_strengths) < len(lora_models):
-                        lora_strengths.extend(['1.0'] * (len(lora_models) - len(lora_strengths)))
-            
-            # Load LoRA models if specified
-            if lora_models:
-                lora_success = self._load_lora_models(lora_models, lora_strengths)
-                if not lora_success:
-                    print("Warning: Failed to load some LoRA models. Continuing with available models.")
             
             # Handle height/width as strings or integers
             try:
@@ -398,8 +340,6 @@ class SDXLWorker(threading.Thread):
                     "parameters": {
                         "prompt": prompt,
                         "negative_prompt": negative_prompt,
-                        "lora_model": lora_models if lora_models else None,
-                        "lora_strength": lora_strengths if lora_strengths else None,
                         "height": height,
                         "width": width,
                         "num_inference_steps": num_inference_steps,
@@ -423,8 +363,6 @@ class SDXLWorker(threading.Thread):
             
         except Exception as e:
             print(f"Error processing job {job_id} on {self.device}: {e}")
-            import traceback
-            traceback.print_exc()
             
             try:
                 # Update job status to failed
@@ -440,6 +378,7 @@ class SDXLWorker(threading.Thread):
                 print(f"Error updating job status: {update_error}")
             
             return False
+
 # Main function
 def main():
     try:
