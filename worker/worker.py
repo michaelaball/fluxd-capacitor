@@ -174,40 +174,38 @@ class SDXLWorker(threading.Thread):
                 compute_dtype = torch.float32
                 print("Using float32 precision (CPU mode)")
             
-            # Create the transformer from the GGUF file
+            # Create the transformer from the GGUF file directly on the target device
+            print(f"Loading quantized transformer model to {self.device}")
             transformer = FluxTransformer2DModel.from_single_file(
                 gguf_path,
                 quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
                 torch_dtype=torch_dtype,
+                device_map=self.device,  # Directly load to the target device
             )
             
             print("Quantized transformer model loaded successfully")
             
             # Create the full pipeline, replacing the transformer with our quantized version
+            print("Creating pipeline with quantized transformer")
             self.pipe = FluxPipeline.from_pretrained(
                 "black-forest-labs/FLUX.1-dev",
                 transformer=transformer,
                 torch_dtype=torch_dtype,
                 use_safetensors=True,
                 low_cpu_mem_usage=True,
+                device_map=self.device,  # Directly load to the target device
             )
             
-            # Move to device
-            if self.gpu_index >= 0:
-                self.pipe = self.pipe.to(self.device)
-                
-                # Enable attention slicing for additional memory savings
-                self.pipe.enable_attention_slicing(slice_size="auto")
-                
-                # Try to enable xformers memory efficiency if available
-                try:
-                    import xformers
-                    self.pipe.enable_xformers_memory_efficient_attention()
-                    print("Enabled xformers memory-efficient attention")
-                except ImportError:
-                    print("Xformers not available, using standard attention")
-            else:
-                self.pipe = self.pipe.to(self.device)
+            # Enable attention slicing for additional memory savings
+            self.pipe.enable_attention_slicing(slice_size="auto")
+            
+            # Try to enable xformers memory efficiency if available
+            try:
+                import xformers
+                self.pipe.enable_xformers_memory_efficient_attention()
+                print("Enabled xformers memory-efficient attention")
+            except ImportError:
+                print("Xformers not available, using standard attention")
             
             # Clear cache after model loading
             if self.gpu_index >= 0:
