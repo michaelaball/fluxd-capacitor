@@ -67,7 +67,7 @@ def get_available_gpus():
     
     return available_gpus
 
-# Worker class for GPU-specific processing
+# Updated SDXLWorker class with separated initialization
 class SDXLWorker(threading.Thread):
     def __init__(self, gpu_index):
         threading.Thread.__init__(self)
@@ -79,9 +79,8 @@ class SDXLWorker(threading.Thread):
     
     def run(self):
         """Main worker thread that processes jobs"""
-        # Initialize model on the specific GPU
-        print(f"Initializing model on {self.device}")
-        self.initialize_model()
+        # Model is already initialized before thread starts
+        print(f"Worker thread started for {self.device}")
         
         while self.running:
             try:
@@ -120,267 +119,9 @@ class SDXLWorker(threading.Thread):
     
     def stop(self):
         """Signal the worker to stop"""
-        self.running = False
+        self.running = True
 
-    def initialize_model(self):
-        """Initialize the FLUX.1-dev model with GGUF quantization on the specific GPU"""
-        try:
-            import torch
-            import os
-            from huggingface_hub import hf_hub_download
-            
-            # Clear CUDA cache before initialization
-            if self.gpu_index >= 0:
-                torch.cuda.empty_cache()
-                torch.cuda.set_device(self.gpu_index)
-            
-            print(f"Using device: {self.device}")
-            
-            # Import diffusers components
-            from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
-            from diffusers.pipelines.flux import pipeline_flux
-            FluxPipeline = pipeline_flux.FluxPipeline
-            # Define GGUF model details
-            gguf_repo = "city96/FLUX.1-dev-gguf"
-            gguf_filename = "flux1-dev-Q8_0.gguf"  # Using 8-bit quantization for good balance
-            
-            # Set up cache directory
-            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "models")
-            os.makedirs(cache_dir, exist_ok=True)
-            
-            print(f"Downloading/loading GGUF model from: {gguf_repo}/{gguf_filename}")
-            
-            # Download GGUF file if not already cached
-            gguf_path = hf_hub_download(
-                repo_id=gguf_repo,
-                filename=gguf_filename,
-                cache_dir=cache_dir
-            )
-            
-            print(f"Using GGUF model from: {gguf_path}")
-            
-            # Determine torch dtype based on device
-            if self.gpu_index >= 0:
-                # First try bfloat16, fall back to float16 if not supported
-                if torch.cuda.is_bf16_supported():
-                    torch_dtype = torch.bfloat16
-                    compute_dtype = torch.bfloat16
-                    print("Using bfloat16 precision")
-                else:
-                    torch_dtype = torch.float16
-                    compute_dtype = torch.float16
-                    print("bfloat16 not supported, using float16 precision")
-            else:
-                torch_dtype = torch.float32
-                compute_dtype = torch.float32
-                print("Using float32 precision (CPU mode)")
-            
-            # Create the transformer from the GGUF file
-            print(f"Loading quantized transformer model")
-            transformer = FluxTransformer2DModel.from_single_file(
-                gguf_path,
-                quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
-                torch_dtype=torch_dtype,
-            )
-            
-            print("Quantized transformer model loaded successfully")
-            
-            # Create the full pipeline, replacing the transformer with our quantized version
-            print("Creating pipeline with quantized transformer")
-            self.pipe = FluxPipeline.from_pretrained(
-                "black-forest-labs/FLUX.1-dev",
-                transformer=transformer,
-                torch_dtype=torch_dtype,
-                use_safetensors=True,
-                low_cpu_mem_usage=True,
-            )
-            
-            # Now move to device (two-step approach)
-            print(f"Moving pipeline to {self.device}")
-            self.pipe = self.pipe.to(self.device)
-            
-            # Enable attention slicing for additional memory savings
-            self.pipe.enable_attention_slicing(slice_size="auto")
-            
-            # Try to enable xformers memory efficiency if available
-            try:
-                import xformers
-                self.pipe.enable_xformers_memory_efficient_attention()
-                print("Enabled xformers memory-efficient attention")
-            except ImportError:
-                print("Xformers not available, using standard attention")
-            
-            # Clear cache after model loading
-            if self.gpu_index >= 0:
-                torch.cuda.empty_cache()
-                if hasattr(torch.cuda, 'memory_allocated'):
-                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
-                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
-                    print(f"GPU {self.gpu_index} memory after loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-            
-            print(f"FLUX.1-dev GGUF quantized model initialized successfully on {self.device}")
-            return True
-            
-        except Exception as e:
-            print(f"Error initializing GGUF quantized model: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-        except Exception as e:
-            print(f"Error initializing model on {self.device}: {e}")
-            raise
-
-    def process_job(self, job_id):
-        """Process a single job"""
-        try:
-            print(f"Processing job {job_id} on {self.device}")
-            
-            # Import S3Storage class
-            from storage import S3Storage
-            
-            # Initialize storage handler
-            storage = S3Storage()
-            
-            # Get job data from Redis
-            job_data_raw = redis_client.get(f"job:{job_id}")
-            if not job_data_raw:
-                print(f"Job {job_id} not found in Redis")
-                return False
-            
-            # Parse job data
-            job_data = json.loads(job_data_raw)
-            
-            # Update job status to processing
-            job_data["status"] = "processing"
-            job_data["device"] = self.device
-            redis_client.set(f"job:{job_id}", json.dumps(job_data))
-            
-            # Extract parameters with defaults, handling string inputs
-            prompt = job_data.get("prompt", "")
-            negative_prompt = job_data.get("negative_prompt", "")
-            
-            # Handle height/width as strings or integers
-            try:
-                height = int(job_data.get("height", 1024))
-            except (TypeError, ValueError):
-                height = 1024
-                
-            try:
-                width = int(job_data.get("width", 1024))
-            except (TypeError, ValueError):
-                width = 1024
-                
-            # Handle num_inference_steps as string or integer
-            try:
-                num_inference_steps = int(job_data.get("num_inference_steps", 20))
-            except (TypeError, ValueError):
-                num_inference_steps = 20
-                
-            # Handle guidance_scale as string or float
-            try:
-                guidance_scale = float(job_data.get("guidance_scale", 7.5))
-            except (TypeError, ValueError):
-                guidance_scale = 7.5
-                
-            # Get number of images
-            num_images = min(job_data.get("num_images", 1), 4)  # Limit to 4 images max
-            
-            # Handle seed (null means random)
-            seed = job_data.get("seed")
-            if seed is None or seed == "null":
-                seed = int(time.time())
-            else:
-                try:
-                    seed = int(seed)
-                except (TypeError, ValueError):
-                    seed = int(time.time())
-            
-            # Record start time
-            start_time = time.time()
-            
-            # Set up generator for reproducibility
-            generator = None
-            if seed is not None:
-                generator = torch.Generator(device=self.device).manual_seed(seed)
-            
-            # Generate the image(s)
-            images = self.pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                height=height,
-                width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                num_images_per_prompt=num_images,
-                generator=generator
-            ).images
-            
-            # Calculate generation time
-            generation_time = time.time() - start_time
-            print(f"Generated {len(images)} images in {generation_time:.2f}s on {self.device}")
-            
-            # Upload images to S3
-            image_urls = storage.upload_images(images, job_id)
-            
-            # If configured to include base64, prepare those too
-            base64_images = None
-            if storage.should_include_base64():
-                base64_images = []
-                for image in images:
-                    buffered = BytesIO()
-                    image.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-                    base64_images.append(img_str)
-            
-            # Update job with result
-            job_data.update({
-                "status": "completed",
-                "result": {
-                    "image_urls": image_urls,
-                    "base64_images": base64_images,
-                    "parameters": {
-                        "prompt": prompt,
-                        "negative_prompt": negative_prompt,
-                        "height": height,
-                        "width": width,
-                        "num_inference_steps": num_inference_steps,
-                        "guidance_scale": guidance_scale,
-                        "seed": seed,
-                    },
-                    "generation_time": generation_time,
-                    "device": self.device
-                },
-                "completedAt": time.time()
-            })
-            
-            # Save updated job data back to Redis
-            redis_client.set(f"job:{job_id}", json.dumps(job_data))
-            print(f"Job {job_id} completed successfully on {self.device}")
-            
-            # Clean up
-            storage.cleanup()
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error processing job {job_id} on {self.device}: {e}")
-            
-            try:
-                # Update job status to failed
-                job_data = json.loads(redis_client.get(f"job:{job_id}"))
-                job_data.update({
-                    "status": "failed",
-                    "error": str(e),
-                    "device": self.device,
-                    "completedAt": time.time()
-                })
-                redis_client.set(f"job:{job_id}", json.dumps(job_data))
-            except Exception as update_error:
-                print(f"Error updating job status: {update_error}")
-            
-            return False
-
-# Main function
+# Modified main function for sequential GPU initialization
 def main():
     try:
         # Test Redis connection
@@ -397,14 +138,31 @@ def main():
             print("No usable GPUs found, will use CPU")
             gpus = [{'index': -1, 'name': 'CPU'}]  # Add CPU as a fallback
         
-        # Start worker threads for each GPU
+        # Create worker objects but don't start them yet
         workers = []
         for gpu in gpus:
             worker = SDXLWorker(gpu['index'])
-            worker.start()
             workers.append(worker)
         
-        print(f"Started {len(workers)} worker threads")
+        # Initialize each worker sequentially to avoid resource conflicts
+        print("Initializing workers sequentially...")
+        for i, worker in enumerate(workers):
+            print(f"Initializing worker {i+1}/{len(workers)} (Device: {worker.device})")
+            # Initialize model without starting the thread
+            success = worker.initialize_model()
+            if not success:
+                print(f"WARNING: Failed to initialize worker for {worker.device}")
+        
+        # Now start all worker threads
+        print("Starting worker threads...")
+        for worker in workers:
+            if hasattr(worker, 'pipe') and worker.pipe is not None:
+                worker.start()
+                print(f"Started worker thread for {worker.device}")
+            else:
+                print(f"Skipping worker thread for {worker.device} due to initialization failure")
+        
+        print(f"Started {sum(1 for w in workers if hasattr(w, 'pipe') and w.pipe is not None)} worker threads")
         
         # Keep the main thread alive
         try:
@@ -419,6 +177,8 @@ def main():
         print("Failed to connect to Redis. Check your connection settings.")
     except Exception as e:
         print(f"Unhandled exception: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
