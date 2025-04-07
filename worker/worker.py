@@ -110,33 +110,48 @@ class SDXLWorker(threading.Thread):
         """Signal the worker to stop"""
         self.running = False
 
+
     def cleanup_gpu_memory(self):
-        """Thoroughly clean up GPU memory between generations"""
+        """Thoroughly clean up GPU memory between generations without reinitializing"""
         if self.gpu_index >= 0:
             try:
-                # Standard cache clearing
+                # Unload any adapters or weights if supported
+                if hasattr(self.pipe, "unload_lora_weights"):
+                    try:
+                        self.pipe.unload_lora_weights()
+                    except Exception as e:
+                        print(f"Error unloading LoRA weights: {e}")
+
+                # Delete any stored states in text encoder or unet that might persist
+                try:
+                    if hasattr(self.pipe.text_encoder, "delete_adapters"):
+                        self.pipe.text_encoder.delete_adapters()
+                    if hasattr(self.pipe.unet, "delete_adapters"):
+                        self.pipe.unet.delete_adapters()
+                except Exception as e:
+                    print(f"Error deleting adapters: {e}")
+
+                # Standard CUDA cache clearing
                 torch.cuda.empty_cache()
                 
                 # Force garbage collection
                 import gc
                 gc.collect()
                 
-                # Move pipe to CPU temporarily if needed
-                # if hasattr(self, 'pipe') and self.pipe is not None:
-                    # self.pipe = self.pipe.to('cpu')
-                    # torch.cuda.empty_cache()
-                    # gc.collect()
-                    # self.pipe = self.pipe.to(self.device)
-                
-                print(f"Thorough GPU memory cleanup completed on {self.device}")
-                
-                # Print memory usage for debugging
-                if hasattr(torch.cuda, 'memory_allocated'):
+                # Detailed memory diagnostics
+                if torch.cuda.is_available():
                     allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
                     reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
                     print(f"GPU {self.gpu_index} memory after cleanup: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                    
+                    # Optional: If memory is still high, print detailed summary
+                    if allocated > 2.0:  # Threshold can be adjusted
+                        print(torch.cuda.memory_summary(device=self.gpu_index))
+                        
             except Exception as e:
-                print(f"Error during thorough GPU cleanup: {e}")
+                print(f"Error during GPU memory cleanup: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _manage_lora_weights(self, new_loras=None, new_strengths=None):
         """
