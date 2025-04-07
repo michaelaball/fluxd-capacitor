@@ -211,9 +211,7 @@ class SDXLWorker(threading.Thread):
             # Memory optimization settings
             self.pipe = FluxPipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch_dtype,
-                variant="bf16", # Ensure we get the optimized variant if available
-                use_safetensors=True
+                torch_dtype=torch_dtype
             )
             
             # Apply memory optimizations
