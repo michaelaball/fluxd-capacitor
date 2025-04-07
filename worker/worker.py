@@ -9,6 +9,10 @@ import torch
 import threading
 import argparse
 
+# At the top of your worker.py file, before importing torch
+from dotenv import load_dotenv
+load_dotenv()  # This loads the variables from .env
+
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='SDXL Worker')
 parser.add_argument('--queue-name', default='sdxl_jobs', help='Redis queue name')
