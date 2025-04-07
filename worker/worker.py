@@ -156,11 +156,12 @@ def run_worker(gpu_index, queue_name, polling_interval):
                 )
                 
                 # Memory optimization techniques
+                self.pipe.enable_model_cpu_offload()  # Reintroduce CPU offloading
                 self.pipe.enable_attention_slicing()
                 if hasattr(self.pipe, "enable_vae_slicing"):
                     self.pipe.enable_vae_slicing()
                 
-                print("Model loaded successfully.")
+                print("Model loaded successfully with CPU offloading.")
                 return True
                 
             except Exception as e:
