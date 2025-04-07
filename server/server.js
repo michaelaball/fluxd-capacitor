@@ -83,8 +83,8 @@ app.post('/status/:jobId', async (req, res) => {
     res.status(200).json({
       jobId,
       status: job.status,
-      output: job.result?.output,
-      result: job.result,
+      output: job.data?.output,
+      result: job.data,
       createdAt: job.createdAt,
       completedAt: job.completedAt
     });
