@@ -5,8 +5,10 @@ import base64
 from io import BytesIO
 import redis
 import torch
-import threading
+import multiprocessing
 import argparse
+import signal
+import sys
 
 # At the top of your worker.py file, before importing torch
 from dotenv import load_dotenv
@@ -18,16 +20,14 @@ parser.add_argument('--queue-name', default='sdxl_jobs', help='Redis queue name'
 parser.add_argument('--polling-interval', type=float, default=1.0, help='Polling interval in seconds')
 args = parser.parse_args()
 
-# Redis connection
-redis_client = redis.Redis(
-    host=os.getenv('REDIS_HOST', 'localhost'),
-    port=int(os.getenv('REDIS_PORT', 6379)),
-    password=os.getenv('REDIS_PASSWORD', ''),
-    decode_responses=True  # Automatically decode bytes to str
-)
-
-# Queue name
-QUEUE_NAME = args.queue_name
+# Redis connection function
+def create_redis_client():
+    return redis.Redis(
+        host=os.getenv('REDIS_HOST', 'localhost'),
+        port=int(os.getenv('REDIS_PORT', 6379)),
+        password=os.getenv('REDIS_PASSWORD', ''),
+        decode_responses=True  # Automatically decode bytes to str
+    )
 
 # Detect available GPUs
 def get_available_gpus():
@@ -68,93 +68,15 @@ def get_available_gpus():
     return available_gpus
 
 # Worker class for GPU-specific processing
-class SDXLWorker(threading.Thread):
-    def __init__(self, gpu_index):
-        threading.Thread.__init__(self)
+class SDXLWorker:
+    def __init__(self, gpu_index, queue_name, polling_interval):
         self.gpu_index = gpu_index
         self.device = f"cuda:{gpu_index}" if gpu_index >= 0 else "cpu"
+        self.queue_name = queue_name
+        self.polling_interval = polling_interval
         self.pipe = None
-        self.daemon = True  # Thread will exit when main program exits
-        self.running = True
         self.loaded_loras = {}
-    
-    def run(self):
-        """Main worker thread that processes jobs"""
-        # Model is already initialized before thread starts
-        print(f"Worker thread started for {self.device}")
         
-        while self.running:
-            try:
-                torch.cuda.set_device(self.gpu_index)
-                # Pull directly from Redis queue
-                job_id = redis_client.lpop(QUEUE_NAME)
-                
-                # If no job, wait and try again
-                if not job_id:
-                    time.sleep(args.polling_interval)
-                    continue
-                
-                # Process the job
-                self.process_job(job_id)
-                
-                # Clear CUDA cache after processing
-                self.cleanup_gpu_memory()
-                
-            except Exception as e:
-                print(f"Error in worker thread for device {self.device}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Brief delay before continuing
-                time.sleep(1)
-    
-    def stop(self):
-        """Signal the worker to stop"""
-        self.running = False
-
-
-    def cleanup_gpu_memory(self):
-        """Thoroughly clean up GPU memory between generations without reinitializing"""
-        if self.gpu_index >= 0:
-            try:
-                # Unload any adapters or weights if supported
-                if hasattr(self.pipe, "unload_lora_weights"):
-                    try:
-                        self.pipe.unload_lora_weights()
-                    except Exception as e:
-                        print(f"Error unloading LoRA weights: {e}")
-
-                # Delete any stored states in text encoder or unet that might persist
-                try:
-                    if hasattr(self.pipe.text_encoder, "delete_adapters"):
-                        self.pipe.text_encoder.delete_adapters()
-                    if hasattr(self.pipe.unet, "delete_adapters"):
-                        self.pipe.unet.delete_adapters()
-                except Exception as e:
-                    print(f"Error deleting adapters: {e}")
-
-                # Standard CUDA cache clearing
-                torch.cuda.empty_cache()
-                
-                # Force garbage collection
-                import gc
-                gc.collect()
-                
-                # Detailed memory diagnostics
-                if torch.cuda.is_available():
-                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
-                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
-                    print(f"GPU {self.gpu_index} memory after cleanup: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-                    
-                    # Optional: If memory is still high, print detailed summary
-                    if allocated > 2.0:  # Threshold can be adjusted
-                        print(torch.cuda.memory_summary(device=self.gpu_index))
-                        
-            except Exception as e:
-                print(f"Error during GPU memory cleanup: {e}")
-                import traceback
-                traceback.print_exc()
-
-
     def initialize_model(self):
         """Initialize the FLUX.1-dev model on the specific GPU with memory optimizations"""
         try:
@@ -171,45 +93,16 @@ class SDXLWorker(threading.Thread):
             model_id = "black-forest-labs/FLUX.1-dev"
             
             # Determine torch dtype based on device
-            if self.gpu_index >= 0:
-                # Use bfloat16 as specified
-                torch_dtype = torch.bfloat16
-            else:
-                torch_dtype = torch.float32
+            torch_dtype = torch.bfloat16 if self.gpu_index >= 0 else torch.float32
                 
-            # Memory optimization settings
+            # Load pipeline
             self.pipe = FluxPipeline.from_pretrained(
                 model_id,
                 torch_dtype=torch_dtype
             )
             
             # Apply memory optimizations
-            # if self.gpu_index >= 0:
-                # self.pipe.enable_model_cpu_offload()
-                
-                # Enable attention slicing to reduce memory usage
-                # self.pipe.enable_attention_slicing()
-                
-                # Enable vae slicing for memory efficiency
-                # if hasattr(self.pipe, "enable_vae_slicing"):
-                #     self.pipe.enable_vae_slicing()
-                    
-                # Enable xformers memory efficient attention if available
-                # try:
-                #     import xformers
-                #     self.pipe.enable_xformers_memory_efficient_attention()
-                #     print("Enabled xformers memory efficient attention")
-                # except ImportError:
-                #     print("xformers not available, skipping memory efficient attention")
-            # else:
-            #     self.pipe = self.pipe.to(self.device)
-
-            # import xformers
             self.pipe.enable_model_cpu_offload()
-            # self.pipe.enable_xformers_memory_efficient_attention()
-            # print("Enabled xformers memory efficient attention")
-            # self.pipe.enable_attention_slicing()
-            # self.pipe = self.pipe.to(self.device)
             
             print(f"FLUX.1-dev model initialized successfully on {self.device} with memory optimizations")
             return True
@@ -308,9 +201,54 @@ class SDXLWorker(threading.Thread):
             traceback.print_exc()
             return False
 
+    def cleanup_gpu_memory(self):
+        """Thoroughly clean up GPU memory between generations without reinitializing"""
+        if self.gpu_index >= 0:
+            try:
+                # Unload any adapters or weights if supported
+                if hasattr(self.pipe, "unload_lora_weights"):
+                    try:
+                        self.pipe.unload_lora_weights()
+                    except Exception as e:
+                        print(f"Error unloading LoRA weights: {e}")
+
+                # Delete any stored states in text encoder or unet that might persist
+                try:
+                    if hasattr(self.pipe.text_encoder, "delete_adapters"):
+                        self.pipe.text_encoder.delete_adapters()
+                    if hasattr(self.pipe.unet, "delete_adapters"):
+                        self.pipe.unet.delete_adapters()
+                except Exception as e:
+                    print(f"Error deleting adapters: {e}")
+
+                # Standard CUDA cache clearing
+                torch.cuda.empty_cache()
+                
+                # Force garbage collection
+                import gc
+                gc.collect()
+                
+                # Detailed memory diagnostics
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                    print(f"GPU {self.gpu_index} memory after cleanup: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                    
+                    # Optional: If memory is still high, print detailed summary
+                    if allocated > 2.0:  # Threshold can be adjusted
+                        print(torch.cuda.memory_summary(device=self.gpu_index))
+                        
+            except Exception as e:
+                print(f"Error during GPU memory cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+
     def process_job(self, job_id):
         """Process a single job"""
         try:
+            # Create a new Redis client for this process
+            redis_client = create_redis_client()
+            
             print(f"Processing job {job_id} on {self.device}")
             
             # Import S3Storage class
@@ -404,7 +342,6 @@ class SDXLWorker(threading.Thread):
                 generator = torch.Generator(device=self.device).manual_seed(seed)
             
             # Generate the image(s)
-            # torch.cuda.set_device(self.gpu_index)
             images = self.pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -485,14 +422,70 @@ class SDXLWorker(threading.Thread):
             
             return False
 
-# Modified main function for sequential GPU initialization
+    def run(self):
+        """Main worker process that continuously pulls and processes jobs"""
+        # Ensure model is initialized
+        if not self.initialize_model():
+            print(f"Failed to initialize model for {self.device}. Exiting worker process.")
+            return
+        
+        print(f"Starting worker process for {self.device}")
+        
+        # Create a separate Redis client for this process
+        redis_client = create_redis_client()
+        
+        while True:
+            try:
+                # Pull directly from Redis queue
+                job_id = redis_client.lpop(self.queue_name)
+                
+                # If no job, wait and try again
+                if not job_id:
+                    time.sleep(self.polling_interval)
+                    continue
+                
+                # Process the job
+                self.process_job(job_id)
+                
+                # Clear CUDA cache after processing
+                self.cleanup_gpu_memory()
+                
+            except Exception as e:
+                print(f"Error in worker process for device {self.device}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Brief delay before continuing
+                time.sleep(1)
+                
+def gpu_worker_process(gpu_index, queue_name, polling_interval):
+    """
+    Wrapper function to run a worker for a specific GPU as a separate process
+    
+    Args:
+        gpu_index (int): Index of the GPU to use (-1 for CPU)
+        queue_name (str): Name of the Redis queue to pull jobs from
+        polling_interval (float): Interval between job checks
+    """
+    # Set up signal handling to allow graceful shutdown
+    def signal_handler(signum, frame):
+        print(f"Received signal {signum}. Shutting down worker process for GPU {gpu_index}")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Create and run worker
+    worker = SDXLWorker(gpu_index, queue_name, polling_interval)
+    worker.run()
+
 def main():
     try:
-        # Test Redis connection
+        # Create a primary Redis client to test connection
+        redis_client = create_redis_client()
         redis_client.ping()
         print("Connected to Redis successfully")
         
-        # Detect available GPUs
+        # Get available GPUs
         gpus = get_available_gpus()
         
         # Print summary
@@ -502,41 +495,41 @@ def main():
             print("No usable GPUs found, will use CPU")
             gpus = [{'index': -1, 'name': 'CPU'}]  # Add CPU as a fallback
         
-        # Create worker objects but don't start them yet
+        # Create a list to track worker processes
         workers = []
+        
+        # Set up multiprocessing context
+        multiprocessing.set_start_method('spawn')
+        
+        # Create a worker process for each GPU
         for gpu in gpus:
-            worker = SDXLWorker(gpu['index'])
-            workers.append(worker)
+            # Create a process for each GPU
+            process = multiprocessing.Process(
+                target=gpu_worker_process, 
+                args=(
+                    gpu['index'], 
+                    args.queue_name, 
+                    args.polling_interval
+                )
+            )
+            process.start()
+            workers.append(process)
         
-        # Initialize each worker sequentially to avoid resource conflicts
-        print("Initializing workers sequentially...")
-        for i, worker in enumerate(workers):
-            print(f"Initializing worker {i+1}/{len(workers)} (Device: {worker.device})")
-            # Initialize model without starting the thread
-            success = worker.initialize_model()
-            if not success:
-                print(f"WARNING: Failed to initialize worker for {worker.device}")
+        print(f"Started {len(workers)} worker processes")
         
-        # Now start all worker threads
-        print("Starting worker threads...")
-        for worker in workers:
-            if hasattr(worker, 'pipe') and worker.pipe is not None:
-                worker.start()
-                print(f"Started worker thread for {worker.device}")
-            else:
-                print(f"Skipping worker thread for {worker.device} due to initialization failure")
-        
-        print(f"Started {sum(1 for w in workers if hasattr(w, 'pipe') and w.pipe is not None)} worker threads")
-        
-        # Keep the main thread alive
+        # Keep the main process alive and wait for child processes
         try:
-            while True:
-                time.sleep(1)
+            # Wait for all processes to complete (which they won't unless there's an error)
+            for worker in workers:
+                worker.join()
         except KeyboardInterrupt:
             print("Received keyboard interrupt, shutting down workers...")
-            for worker in workers:
-                worker.stop()
             
+            # Terminate all worker processes
+            for worker in workers:
+                worker.terminate()
+                worker.join()
+        
     except redis.ConnectionError:
         print("Failed to connect to Redis. Check your connection settings.")
     except Exception as e:
