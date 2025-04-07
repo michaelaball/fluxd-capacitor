@@ -137,8 +137,9 @@ class SDXLWorker(threading.Thread):
             print(f"Using device: {self.device}")
             
             # Import diffusers components
-            from diffusers import FluxPipeline, FluxTransformer2DModel, GGUFQuantizationConfig
-            
+            from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
+            from diffusers.pipelines.flux import pipeline_flux
+            FluxPipeline = pipeline_flux.FluxPipeline
             # Define GGUF model details
             gguf_repo = "city96/FLUX.1-dev-gguf"
             gguf_filename = "flux1-dev-Q8_0.gguf"  # Using 8-bit quantization for good balance
