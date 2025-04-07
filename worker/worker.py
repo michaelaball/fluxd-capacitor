@@ -85,6 +85,7 @@ class SDXLWorker(threading.Thread):
         
         while self.running:
             try:
+                torch.cuda.set_device(self.gpu_index)
                 # Pull directly from Redis queue
                 job_id = redis_client.lpop(QUEUE_NAME)
                 
