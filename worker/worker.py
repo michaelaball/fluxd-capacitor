@@ -334,8 +334,9 @@ def run_worker(gpu_index, queue_name, polling_interval):
                 # Prepare job completion data
                 generation_time = time.time() - start_time
                 job_data.update({
-                    "status": "completed",
-                    "result": {
+                    "status": "success",
+                    "output": image_urls,
+                    "data": {
                         "image_urls": image_urls,
                         "base64_images": base64_images,
                         "parameters": {
@@ -365,7 +366,7 @@ def run_worker(gpu_index, queue_name, polling_interval):
             # Update job statuses to failed
             for job_id, job_data in zip(batch_job_ids, batch_jobs):
                 try:
-                    job_data["status"] = "failed"
+                    job_data["status"] = "error"
                     job_data["error"] = str(e)
                     redis_client.set(f"job:{job_id}", json.dumps(job_data))
                 except Exception:

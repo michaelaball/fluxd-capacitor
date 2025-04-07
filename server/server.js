@@ -54,7 +54,8 @@ app.post('/generate', async (req, res) => {
     // Return job ID to client
     res.status(202).json({
       jobId,
-      status: 'pending',
+      status: 'processing',
+      fetch_result: `https://${process.env.RUNPOD_POD_ID}-3000.proxy.runpod.net/status/${jobId}`,
       message: 'Job added to queue'
     });
   } catch (error) {
@@ -64,7 +65,7 @@ app.post('/generate', async (req, res) => {
 });
 
 // Get job status
-app.get('/status/:jobId', async (req, res) => {
+app.post('/status/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
     
