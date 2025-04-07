@@ -40,6 +40,124 @@ class S3Storage:
         self.temp_dir = Path("./temp")
         self.temp_dir.mkdir(exist_ok=True)
         
+
+        def download_from_s3(self, s3_prefix, local_dir, force_download=False):
+            """
+            Download files from S3 bucket with a specific prefix to a local directory
+            
+            Args:
+                s3_prefix (str): Prefix in S3 bucket to download from (e.g., 'loras/')
+                local_dir (str): Local directory to download files to
+                force_download (bool): If True, download even if file exists locally
+                
+            Returns:
+                list: List of downloaded file paths
+            """
+            import os
+            from pathlib import Path
+            
+            # Ensure the local directory exists
+            local_path = Path(local_dir)
+            local_path.mkdir(parents=True, exist_ok=True)
+            
+            # List objects with the given prefix
+            try:
+                paginator = self.client.get_paginator('list_objects_v2')
+                pages = paginator.paginate(Bucket=self.bucket_name, Prefix=s3_prefix)
+                
+                downloaded_files = []
+                
+                for page in pages:
+                    if 'Contents' not in page:
+                        print(f"No files found with prefix '{s3_prefix}' in bucket '{self.bucket_name}'")
+                        return downloaded_files
+                        
+                    for obj in page['Contents']:
+                        # Get the file key and name
+                        file_key = obj['Key']
+                        file_name = os.path.basename(file_key)
+                        
+                        if not file_name:  # Skip if it's a directory
+                            continue
+                            
+                        local_file_path = local_path / file_name
+                        
+                        # Check if we need to download the file
+                        if force_download or not local_file_path.exists():
+                            print(f"Downloading {file_key} to {local_file_path}")
+                            
+                            # Ensure sub-directories exist
+                            local_file_path.parent.mkdir(parents=True, exist_ok=True)
+                            
+                            # Download the file
+                            self.client.download_file(
+                                self.bucket_name,
+                                file_key,
+                                str(local_file_path)
+                            )
+                            
+                            downloaded_files.append(str(local_file_path))
+                        else:
+                            print(f"File already exists: {local_file_path}")
+                            downloaded_files.append(str(local_file_path))
+                            
+                return downloaded_files
+                
+            except Exception as e:
+                print(f"Error downloading files from S3: {e}")
+                return []
+
+        def download_specific_files(self, file_names, s3_prefix, local_dir, force_download=False):
+            """
+            Download specific files from S3 bucket
+            
+            Args:
+                file_names (list): List of file names to download
+                s3_prefix (str): Prefix in S3 bucket to download from (e.g., 'loras/')
+                local_dir (str): Local directory to download files to
+                force_download (bool): If True, download even if file exists locally
+                
+            Returns:
+                list: List of downloaded file paths
+            """
+            import os
+            from pathlib import Path
+            
+            # Ensure the local directory exists
+            local_path = Path(local_dir)
+            local_path.mkdir(parents=True, exist_ok=True)
+            
+            downloaded_files = []
+            
+            for file_name in file_names:
+                # Ensure file has safetensors extension if not already
+                if not file_name.endswith('.safetensors'):
+                    file_name = f"{file_name}.safetensors"
+                    
+                # Create S3 key and local path
+                file_key = f"{s3_prefix.rstrip('/')}/{file_name}"
+                local_file_path = local_path / file_name
+                
+                # Check if we need to download the file
+                if force_download or not local_file_path.exists():
+                    try:
+                        print(f"Downloading {file_key} to {local_file_path}")
+                        
+                        # Download the file
+                        self.client.download_file(
+                            self.bucket_name,
+                            file_key,
+                            str(local_file_path)
+                        )
+                        
+                        downloaded_files.append(str(local_file_path))
+                    except Exception as e:
+                        print(f"Error downloading {file_key}: {e}")
+                else:
+                    print(f"File already exists: {local_file_path}")
+                    downloaded_files.append(str(local_file_path))
+                        
+            return downloaded_files 
     def upload_image(self, image, job_id, index=0):
         """
         Upload a PIL Image to S3 and return the URL.
@@ -165,120 +283,3 @@ class S3Storage:
     
     # Add this function to your storage.py file
 
-def download_from_s3(self, s3_prefix, local_dir, force_download=False):
-    """
-    Download files from S3 bucket with a specific prefix to a local directory
-    
-    Args:
-        s3_prefix (str): Prefix in S3 bucket to download from (e.g., 'loras/')
-        local_dir (str): Local directory to download files to
-        force_download (bool): If True, download even if file exists locally
-        
-    Returns:
-        list: List of downloaded file paths
-    """
-    import os
-    from pathlib import Path
-    
-    # Ensure the local directory exists
-    local_path = Path(local_dir)
-    local_path.mkdir(parents=True, exist_ok=True)
-    
-    # List objects with the given prefix
-    try:
-        paginator = self.client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=self.bucket_name, Prefix=s3_prefix)
-        
-        downloaded_files = []
-        
-        for page in pages:
-            if 'Contents' not in page:
-                print(f"No files found with prefix '{s3_prefix}' in bucket '{self.bucket_name}'")
-                return downloaded_files
-                
-            for obj in page['Contents']:
-                # Get the file key and name
-                file_key = obj['Key']
-                file_name = os.path.basename(file_key)
-                
-                if not file_name:  # Skip if it's a directory
-                    continue
-                    
-                local_file_path = local_path / file_name
-                
-                # Check if we need to download the file
-                if force_download or not local_file_path.exists():
-                    print(f"Downloading {file_key} to {local_file_path}")
-                    
-                    # Ensure sub-directories exist
-                    local_file_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Download the file
-                    self.client.download_file(
-                        self.bucket_name,
-                        file_key,
-                        str(local_file_path)
-                    )
-                    
-                    downloaded_files.append(str(local_file_path))
-                else:
-                    print(f"File already exists: {local_file_path}")
-                    downloaded_files.append(str(local_file_path))
-                    
-        return downloaded_files
-        
-    except Exception as e:
-        print(f"Error downloading files from S3: {e}")
-        return []
-
-def download_specific_files(self, file_names, s3_prefix, local_dir, force_download=False):
-    """
-    Download specific files from S3 bucket
-    
-    Args:
-        file_names (list): List of file names to download
-        s3_prefix (str): Prefix in S3 bucket to download from (e.g., 'loras/')
-        local_dir (str): Local directory to download files to
-        force_download (bool): If True, download even if file exists locally
-        
-    Returns:
-        list: List of downloaded file paths
-    """
-    import os
-    from pathlib import Path
-    
-    # Ensure the local directory exists
-    local_path = Path(local_dir)
-    local_path.mkdir(parents=True, exist_ok=True)
-    
-    downloaded_files = []
-    
-    for file_name in file_names:
-        # Ensure file has safetensors extension if not already
-        if not file_name.endswith('.safetensors'):
-            file_name = f"{file_name}.safetensors"
-            
-        # Create S3 key and local path
-        file_key = f"{s3_prefix.rstrip('/')}/{file_name}"
-        local_file_path = local_path / file_name
-        
-        # Check if we need to download the file
-        if force_download or not local_file_path.exists():
-            try:
-                print(f"Downloading {file_key} to {local_file_path}")
-                
-                # Download the file
-                self.client.download_file(
-                    self.bucket_name,
-                    file_key,
-                    str(local_file_path)
-                )
-                
-                downloaded_files.append(str(local_file_path))
-            except Exception as e:
-                print(f"Error downloading {file_key}: {e}")
-        else:
-            print(f"File already exists: {local_file_path}")
-            downloaded_files.append(str(local_file_path))
-                
-    return downloaded_files 
