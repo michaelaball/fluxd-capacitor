@@ -25,7 +25,7 @@ const QUEUE_NAME = 'sdxl_jobs';
 app.use(bodyParser.json());
 
 // Routes
-app.post('v6/images/text2img', async (req, res) => {
+app.post('/v6/images/text2img', async (req, res) => {
   try {
     // Generate a job ID
     const jobId = uuidv4();
