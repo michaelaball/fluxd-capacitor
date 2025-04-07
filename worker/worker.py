@@ -434,9 +434,7 @@ class SDXLWorker(threading.Thread):
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     num_images_per_prompt=num_images,
-                    generator=generator,
-                    # Add memory optimization options
-                    use_resolution_binning=True
+                    generator=generator
                 ).images
                 
                 # Clear cache immediately after generation
