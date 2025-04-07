@@ -236,6 +236,7 @@ class SDXLWorker(threading.Thread):
             #     self.pipe = self.pipe.to(self.device)
 
             import xformers
+            self.pipe.enable_model_cpu_offload()
             self.pipe.enable_xformers_memory_efficient_attention()
             print("Enabled xformers memory efficient attention")
             self.pipe.enable_attention_slicing()
