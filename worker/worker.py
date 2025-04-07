@@ -241,6 +241,8 @@ class SDXLWorker(threading.Thread):
                 self.loaded_loras = {}
                 
             print(f"Loading LoRA models: {lora_models} with strengths: {lora_strengths}")
+
+            torch.cuda.set_device(self.gpu_index)
             
             # Check if the same models with same strengths are already loaded
             current_loras = {model: strength for model, strength in zip(lora_models, lora_strengths)}
@@ -310,6 +312,7 @@ class SDXLWorker(threading.Thread):
         """Process a single job"""
         try:
             print(f"Processing job {job_id} on {self.device}")
+            torch.cuda.set_device(self.gpu_index)
             
             # Import S3Storage class
             from storage import S3Storage
