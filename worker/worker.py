@@ -201,17 +201,10 @@ class SDXLWorker(threading.Thread):
             # Now move to device (two-step approach)
             print(f"Moving pipeline to {self.device}")
             self.pipe = self.pipe.to(self.device)
-            
-            # Update this part of the initialize_model method
-            # Replace the part after moving the pipeline to device
-
-            # Now move to device (two-step approach)
-            print(f"Moving pipeline to {self.device}")
-            self.pipe = self.pipe.to(self.device)
 
             # Enable attention slicing for additional memory savings, but with a larger slice size
             # to avoid potential issues with attention calculation
-            self.pipe.enable_attention_slicing(slice_size=2)
+            self.pipe.enable_attention_slicing(slice_size="auto")
 
             # Do NOT enable xformers as it might be causing the attention error
             print("Using standard attention mechanism for better compatibility")
