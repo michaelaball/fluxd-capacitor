@@ -235,6 +235,10 @@ class SDXLWorker(threading.Thread):
             # else:
             #     self.pipe = self.pipe.to(self.device)
 
+            import xformers
+            self.pipe.enable_xformers_memory_efficient_attention()
+            print("Enabled xformers memory efficient attention")
+            self.pipe.enable_attention_slicing()
             self.pipe = self.pipe.to(self.device)
             
             print(f"FLUX.1-dev model initialized successfully on {self.device} with memory optimizations")
