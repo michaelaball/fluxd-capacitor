@@ -184,61 +184,108 @@ def run_worker(gpu_index, queue_name, polling_interval):
     if not worker_ctx.initialize_model():
         print(f"[GPU {gpu_index}] Failed to initialize model. Exiting.")
         return
+    
 
+    def batch_jobs_with_constraints(redis_client, queue_name, max_batch_size=4):
+        """
+        Batch jobs from Redis with consistent parameters
+        
+        Args:
+            redis_client (Redis): Redis client
+            queue_name (str): Name of the job queue
+            max_batch_size (int): Maximum number of jobs to batch
+        
+        Returns:
+            list: Batch of jobs with consistent parameters, or empty list if no jobs
+        """
+        # Pull first job to set the baseline
+        first_job_id = redis_client.lpop(queue_name)
+        if not first_job_id:
+            return []
+        
+        # Fetch first job details
+        first_job_data = json.loads(redis_client.get(f"job:{first_job_id}"))
+        
+        # Baseline parameters to match
+        baseline_height = first_job_data.get("height")
+        baseline_width = first_job_data.get("width")
+        baseline_lora_models = first_job_data.get("lora_model")
+        baseline_lora_strengths = first_job_data.get("lora_strength")
+        
+        # Batch to return
+        batch_jobs = [first_job_data]
+        batch_job_ids = [first_job_id]
+        
+        # Try to pull additional jobs
+        while len(batch_jobs) < max_batch_size:
+            # Pull next job
+            next_job_id = redis_client.lpop(queue_name)
+            if not next_job_id:
+                break
+            
+            # Fetch job details
+            try:
+                next_job_data = json.loads(redis_client.get(f"job:{next_job_id}"))
+                
+                # Check consistency
+                is_consistent = (
+                    next_job_data.get("height") == baseline_height and
+                    next_job_data.get("width") == baseline_width and
+                    next_job_data.get("lora_model", '') == baseline_lora_models and
+                    next_job_data.get("lora_strength", '') == baseline_lora_strengths
+                )
+                
+                if is_consistent:
+                    batch_jobs.append(next_job_data)
+                    batch_job_ids.append(next_job_id)
+                else:
+                    # If inconsistent, return job to queue
+                    redis_client.rpush(queue_name, next_job_id)
+                    break
+            
+            except Exception as e:
+                print(f"Error processing job {next_job_id}: {e}")
+                # Return job to queue on error
+                redis_client.rpush(queue_name, next_job_id)
+                break
+        
+        return batch_jobs, batch_job_ids
+
+    # Continuous job processing loop
     # Continuous job processing loop
     while True:
         try:
-            # Pull job from Redis queue
-            job_id = redis_client.lpop(queue_name)
-            if not job_id:
+            # Batch jobs with consistent parameters
+            batch_jobs, batch_job_ids = batch_jobs_with_constraints(redis_client, queue_name)
+            if not batch_jobs:
                 time.sleep(polling_interval)
                 continue
 
-            # Fetch job details
-            job_data_raw = redis_client.get(f"job:{job_id}")
-            if not job_data_raw:
-                print(f"[GPU {gpu_index}] Job {job_id} not found")
-                continue
+            # Prepare batch prompts and other parameters
+            prompts = []
+            negative_prompts = []
+            jobs_metadata = []
 
-            job_data = json.loads(job_data_raw)
-            
-            # Update job status
-            job_data["status"] = "processing"
-            job_data["device"] = device
-            redis_client.set(f"job:{job_id}", json.dumps(job_data))
-
-            # Handle LoRA models
-            lora_models = []
-            lora_strengths = []
-            if "lora_model" in job_data and job_data["lora_model"]:
-                lora_models = job_data["lora_model"].split(',')
-                lora_models = [model.strip() for model in lora_models]
+            # Prepare jobs for batch processing
+            for job_data in batch_jobs:
+                # Update job status
+                job_data["status"] = "processing"
+                job_data["device"] = device
                 
-                if "lora_strength" in job_data and job_data["lora_strength"]:
-                    lora_strengths = job_data["lora_strength"].split(',')
-                    lora_strengths = [strength.strip() for strength in lora_strengths]
-                    
-                    # Ensure we have a strength value for each model
-                    if len(lora_strengths) < len(lora_models):
-                        lora_strengths.extend(['1.0'] * (len(lora_models) - len(lora_strengths)))
-            
-            # Load LoRA models if specified
-            if lora_models:
-                lora_success = worker_ctx._load_lora_models(lora_models, lora_strengths)
-                if not lora_success:
-                    print("Warning: Failed to load some LoRA models. Continuing with available models.")
+                prompts.append(job_data.get("prompt", "A beautiful dreamscape"))
+                negative_prompts.append(job_data.get("negative_prompt", ""))
+                jobs_metadata.append(job_data)
 
-            # Extract job parameters with sensible defaults
-            prompt = job_data.get("prompt", "A beautiful dreamscape")
-            negative_prompt = job_data.get("negative_prompt", "")
-            height = int(job_data.get("height", 1024))
-            width = int(job_data.get("width", 1024))
-            steps = int(job_data.get("num_inference_steps", 20))
-            guidance = float(job_data.get("guidance_scale", 7.5))
-            num_images = min(int(job_data.get("num_images", 1)), 4)
+            # Use first job's parameters for batch processing
+            first_job = jobs_metadata[0]
+            height = int(first_job.get("height", 1024))
+            width = int(first_job.get("width", 1024))
+            steps = int(first_job.get("num_inference_steps", 20))
+            guidance = float(first_job.get("guidance_scale", 7.5))
+            num_images = len(batch_jobs)  # One image per job
 
             # Set up random seed
-            seed = job_data.get("seed")
+            seed = first_job.get("seed")
             if seed is None or seed == "null":
                 seed = int(time.time())
             else:
@@ -250,80 +297,80 @@ def run_worker(gpu_index, queue_name, polling_interval):
             generator = torch.Generator(device).manual_seed(seed)
 
             # Image generation
-            stylized_prompts = [
-                f"{prompt}, {ART_STYLES['Studio Ghibli']}",
-                f"{prompt}, {ART_STYLES['Digital Synthwave']}",
-                f"{prompt}, {ART_STYLES['Art Deco']}",
-                f"{prompt}, {ART_STYLES['Anime']}",
-            ]
-
             start_time = time.time()
+            print(f"[GPU {gpu_index}] Batch Processing:")
+            print("Batch Parameters:")
+            print(f"  Height: {height}")
+            print(f"  Width: {width}")
+            print(f"  Steps: {steps}")
+            print(f"  Guidance Scale: {guidance}")
+            print(f"  Seed: {seed}")
+            print("Batch Prompts:")
+            for i, prompt in enumerate(prompts, 1):
+                print(f"  Job {i}: {prompt}")
+
             images = worker_ctx.pipe(
-                prompt=stylized_prompts,
-                negative_prompt=negative_prompt,
+                prompt=prompts,
+                negative_prompt=negative_prompts,
                 height=height,
                 width=width,
                 num_inference_steps=steps,
                 guidance_scale=guidance,
-                num_images_per_prompt=num_images,
+                num_images_per_prompt=1,
                 generator=generator
             ).images
+            # Process and save results for each job
+            for job_id, job_data, image in zip(batch_job_ids, jobs_metadata, images):
+                # Upload images
+                image_urls = worker_ctx.storage.upload_images([image], job_id)
 
-            # Upload images
-            image_urls = worker_ctx.storage.upload_images(images, job_id)
-
-            # Prepare base64 images if configured
-            base64_images = None
-            if worker_ctx.storage.should_include_base64():
-                base64_images = []
-                for image in images:
+                # Prepare base64 images if configured
+                base64_images = None
+                if worker_ctx.storage.should_include_base64():
                     buffered = BytesIO()
                     image.save(buffered, format="PNG")
-                    img_str = base64.b64encode(buffered.getvalue()).decode()
-                    base64_images.append(img_str)
+                    base64_images = [base64.b64encode(buffered.getvalue()).decode()]
 
-            # Prepare job completion data
-            generation_time = time.time() - start_time
-            job_data.update({
-                "status": "completed",
-                "result": {
-                    "image_urls": image_urls,
-                    "base64_images": base64_images,
-                    "parameters": {
-                        "prompt": prompt,
-                        "negative_prompt": negative_prompt,
-                        "lora_model": lora_models if lora_models else None,
-                        "lora_strength": lora_strengths if lora_strengths else None,
-                        "height": height,
-                        "width": width,
-                        "steps": steps,
-                        "guidance": guidance,
-                        "seed": seed
+                # Prepare job completion data
+                generation_time = time.time() - start_time
+                job_data.update({
+                    "status": "completed",
+                    "result": {
+                        "image_urls": image_urls,
+                        "base64_images": base64_images,
+                        "parameters": {
+                            "prompt": job_data.get("prompt"),
+                            "negative_prompt": job_data.get("negative_prompt", ""),
+                            "height": height,
+                            "width": width,
+                            "steps": steps,
+                            "guidance": guidance,
+                            "seed": seed
+                        },
+                        "generation_time": generation_time
                     },
-                    "generation_time": generation_time
-                },
-                "completedAt": time.time()
-            })
+                    "completedAt": time.time()
+                })
 
-            # Save completed job data
-            redis_client.set(f"job:{job_id}", json.dumps(job_data))
-            
-            print(f"[GPU {gpu_index}] Job {job_id} completed in {generation_time:.2f}s.")
+                # Save completed job data
+                redis_client.set(f"job:{job_id}", json.dumps(job_data))
+                
+                print(f"[GPU {gpu_index}] Job {job_id} completed in {generation_time:.2f}s.")
 
-            # Clear CUDA cache between jobs
+            # Clear CUDA cache between batches
             torch.cuda.empty_cache()
 
         except Exception as e:
-            print(f"[GPU {gpu_index}] Error processing job: {e}")
-            # Update job status to failed
-            try:
-                job_data["status"] = "failed"
-                job_data["error"] = str(e)
-                redis_client.set(f"job:{job_id}", json.dumps(job_data))
-            except Exception:
-                pass
+            print(f"[GPU {gpu_index}] Error processing batch: {e}")
+            # Update job statuses to failed
+            for job_id, job_data in zip(batch_job_ids, batch_jobs):
+                try:
+                    job_data["status"] = "failed"
+                    job_data["error"] = str(e)
+                    redis_client.set(f"job:{job_id}", json.dumps(job_data))
+                except Exception:
+                    pass
             time.sleep(2)
-
 def main():
     try:
         # Set multiprocessing start method to spawn
