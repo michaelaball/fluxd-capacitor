@@ -18,8 +18,8 @@
 protobuf>=3.20.0
 sentencepiece>=0.1.99
 torch==2.0.1
-torchvision==0.15.2
-torchaudio==2.0.1
+#torchvision==0.15.2
+#torchaudio==2.0.1
 diffusers>=0.27.0  # Need newer version for GGUF support
 transformers>=4.36.0
 accelerate>=0.25.0

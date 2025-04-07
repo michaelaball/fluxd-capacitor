@@ -12,4 +12,4 @@ token is:
 git clone https://github.com/michaelaball/fluxd-capacitor.git
 cd fluxd-capacitor
 cd worker
-npm install
+pip install -r requirements.txt
