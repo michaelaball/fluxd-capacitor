@@ -147,6 +147,87 @@ class SDXLWorker(threading.Thread):
         except Exception as e:
             print(f"Error initializing model on {self.device}: {e}")
             raise
+            # Add this code to the SDXLWorker class in worker.py
+
+    def _load_lora_models(self, lora_models, lora_strengths):
+        """
+        Load LoRA models into the pipeline
+        
+        Args:
+            lora_models (list): List of LoRA model names
+            lora_strengths (list): List of LoRA strength values
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            import os
+            from pathlib import Path
+            from diffusers.utils import load_adapters
+            from storage import S3Storage
+            
+            if not hasattr(self, 'loaded_loras'):
+                self.loaded_loras = {}
+                
+            print(f"Loading LoRA models: {lora_models} with strengths: {lora_strengths}")
+            
+            # Check if the same models with same strengths are already loaded
+            current_loras = {model: strength for model, strength in zip(lora_models, lora_strengths)}
+            if self.loaded_loras == current_loras:
+                print("Same LoRA models already loaded with same strengths, skipping reload")
+                return True
+                
+            # Initialize storage handler
+            storage = S3Storage()
+            
+            # Define local directory for LoRA models
+            lora_dir = Path("./loras")
+            
+            # Download LoRA models from S3
+            downloaded_files = storage.download_specific_files(
+                lora_models,
+                "loras/",
+                str(lora_dir)
+            )
+            
+            if len(downloaded_files) != len(lora_models):
+                print(f"Warning: Not all LoRA models were downloaded. Expected {len(lora_models)}, got {len(downloaded_files)}")
+            
+            # Create dictionary of adapter name to path
+            adapter_paths = {}
+            for i, model_name in enumerate(lora_models):
+                if not model_name.endswith('.safetensors'):
+                    model_name = f"{model_name}.safetensors"
+                    
+                model_path = lora_dir / model_name
+                if model_path.exists():
+                    adapter_name = Path(model_name).stem
+                    adapter_paths[adapter_name] = str(model_path)
+            
+            # Reset pipeline to remove previous adapters
+            # Before loading new adapters, let's disable the existing ones
+            if hasattr(self.pipe, 'unload_lora_weights'):
+                print("Unloading previous LoRA weights")
+                self.pipe.unload_lora_weights()
+            
+            # Load new adapters
+            for i, (adapter_name, adapter_path) in enumerate(adapter_paths.items()):
+                strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
+                print(f"Loading adapter {adapter_name} from {adapter_path} with strength {strength}")
+                
+                # Load the adapter
+                self.pipe.load_lora_weights(adapter_path, adapter_name=adapter_name)
+                self.pipe.set_adapters([adapter_name], adapter_weights=[strength])
+            
+            # Update loaded_loras dictionary
+            self.loaded_loras = current_loras
+            
+            return True
+        except Exception as e:
+            print(f"Error loading LoRA models: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def process_job(self, job_id):
         """Process a single job"""
@@ -176,6 +257,28 @@ class SDXLWorker(threading.Thread):
             # Extract parameters with defaults, handling string inputs
             prompt = job_data.get("prompt", "")
             negative_prompt = job_data.get("negative_prompt", "")
+            
+            # Handle LoRA models and strengths
+            lora_models = []
+            lora_strengths = []
+            
+            if "lora_model" in job_data and job_data["lora_model"]:
+                lora_models = job_data["lora_model"].split(',')
+                lora_models = [model.strip() for model in lora_models]
+                
+                if "lora_strength" in job_data and job_data["lora_strength"]:
+                    lora_strengths = job_data["lora_strength"].split(',')
+                    lora_strengths = [strength.strip() for strength in lora_strengths]
+                    
+                    # Ensure we have a strength value for each model
+                    if len(lora_strengths) < len(lora_models):
+                        lora_strengths.extend(['1.0'] * (len(lora_models) - len(lora_strengths)))
+            
+            # Load LoRA models if specified
+            if lora_models:
+                lora_success = self._load_lora_models(lora_models, lora_strengths)
+                if not lora_success:
+                    print("Warning: Failed to load some LoRA models. Continuing with available models.")
             
             # Handle height/width as strings or integers
             try:
@@ -259,6 +362,8 @@ class SDXLWorker(threading.Thread):
                     "parameters": {
                         "prompt": prompt,
                         "negative_prompt": negative_prompt,
+                        "lora_model": lora_models if lora_models else None,
+                        "lora_strength": lora_strengths if lora_strengths else None,
                         "height": height,
                         "width": width,
                         "num_inference_steps": num_inference_steps,
@@ -282,6 +387,8 @@ class SDXLWorker(threading.Thread):
             
         except Exception as e:
             print(f"Error processing job {job_id} on {self.device}: {e}")
+            import traceback
+            traceback.print_exc()
             
             try:
                 # Update job status to failed
@@ -297,7 +404,6 @@ class SDXLWorker(threading.Thread):
                 print(f"Error updating job status: {update_error}")
             
             return False
-
 # Main function
 def main():
     try:

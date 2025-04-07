@@ -6,6 +6,9 @@ curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
 bash
 nvm install 22
 cd ~
+pip install huggingface_hub
+huggingface-cli login
+token is: 
 git clone https://github.com/michaelaball/fluxd-capacitor.git
 cd fluxd-capacitor
 cd worker

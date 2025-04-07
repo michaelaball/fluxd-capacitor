@@ -8,3 +8,6 @@ pillow>=9.4.0
 numpy>=1.24.2,<2.0.0  # Restrict to NumPy 1.x versions
 boto3>=1.28.0
 python-dotenv>=1.0.0
+
+protobuf>=3.20.0
+sentencepiece>=0.1.99
