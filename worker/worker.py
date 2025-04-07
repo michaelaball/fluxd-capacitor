@@ -18,6 +18,13 @@ parser.add_argument('--queue-name', default='sdxl_jobs')
 parser.add_argument('--polling-interval', type=float, default=1.0)
 args = parser.parse_args()
 
+# Art styles mapping
+ART_STYLES = {
+    "Studio Ghibli": "in the style of Studio Ghibli anime, soft watercolor textures, dreamlike pastel colors, hand-drawn animation aesthetic, intricate background details",
+    "Digital Synthwave": "in the style of retrowave synthwave digital art, neon color palette, 80s cyberpunk aesthetic, vibrant purple and pink gradients, geometric landscape with retro futuristic elements"
+}
+
+
 def create_redis_client():
     """Create a new Redis client"""
     return redis.Redis(
@@ -241,9 +248,14 @@ def run_worker(gpu_index, queue_name, polling_interval):
             generator = torch.Generator(device).manual_seed(seed)
 
             # Image generation
+            stylized_prompts = [
+                f"{prompt}, {ART_STYLES['Studio Ghibli']}",
+                f"{prompt}, {ART_STYLES['Digital Synthwave']}"
+            ]
+
             start_time = time.time()
             images = worker_ctx.pipe(
-                prompt=prompt,
+                prompt=stylized_prompts,
                 negative_prompt=negative_prompt,
                 height=height,
                 width=width,
