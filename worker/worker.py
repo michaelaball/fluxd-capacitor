@@ -209,6 +209,11 @@ class SDXLWorker(threading.Thread):
             # Do NOT enable xformers as it might be causing the attention error
             print("Using standard attention mechanism for better compatibility")
 
+
+            # Add this after pipeline initialization
+            self.pipe.enable_vae_tiling()
+            print("Enable VAE tiling")
+
             # Clear cache after model loading
             if self.gpu_index >= 0:
                 torch.cuda.empty_cache()
