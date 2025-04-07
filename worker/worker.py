@@ -202,17 +202,20 @@ class SDXLWorker(threading.Thread):
             print(f"Moving pipeline to {self.device}")
             self.pipe = self.pipe.to(self.device)
             
-            # Enable attention slicing for additional memory savings
-            self.pipe.enable_attention_slicing(slice_size="auto")
-            
-            # Try to enable xformers memory efficiency if available
-            try:
-                import xformers
-                self.pipe.enable_xformers_memory_efficient_attention()
-                print("Enabled xformers memory-efficient attention")
-            except ImportError:
-                print("Xformers not available, using standard attention")
-            
+            # Update this part of the initialize_model method
+            # Replace the part after moving the pipeline to device
+
+            # Now move to device (two-step approach)
+            print(f"Moving pipeline to {self.device}")
+            self.pipe = self.pipe.to(self.device)
+
+            # Enable attention slicing for additional memory savings, but with a larger slice size
+            # to avoid potential issues with attention calculation
+            self.pipe.enable_attention_slicing(slice_size=2)
+
+            # Do NOT enable xformers as it might be causing the attention error
+            print("Using standard attention mechanism for better compatibility")
+
             # Clear cache after model loading
             if self.gpu_index >= 0:
                 torch.cuda.empty_cache()
@@ -220,7 +223,7 @@ class SDXLWorker(threading.Thread):
                     allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
                     reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
                     print(f"GPU {self.gpu_index} memory after loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-            
+
             print(f"FLUX.1-dev GGUF quantized model initialized successfully on {self.device}")
             return True
             
