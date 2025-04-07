@@ -15,20 +15,18 @@
 # peft>=0.7.0
 
 
-protobuf>=3.20.0
-sentencepiece>=0.1.99
-torch==2.0.1
-#torchvision==0.15.2
-#torchaudio==2.0.1
-diffusers>=0.27.0  # Need newer version for GGUF support
+torch>=2.1.0
+diffusers>=0.27.0
 transformers>=4.36.0
 accelerate>=0.25.0
 safetensors>=0.3.1
 peft>=0.7.0
+protobuf>=3.20.0
+sentencepiece>=0.1.99
 xformers>=0.0.22
 pillow>=9.4.0
 numpy>=1.24.2,<2.0.0
 redis>=4.5.1
 boto3>=1.28.0
 python-dotenv>=1.0.0
-huggingface_hub>=0.20.0  # For downloading models
+huggingface_hub>=0.20.0
