@@ -215,15 +215,15 @@ class SDXLWorker(threading.Thread):
             )
             
             # Apply memory optimizations
-            if self.gpu_index >= 0:
+            # if self.gpu_index >= 0:
                 # self.pipe.enable_model_cpu_offload()
                 
                 # Enable attention slicing to reduce memory usage
-                self.pipe.enable_attention_slicing()
+                # self.pipe.enable_attention_slicing()
                 
                 # Enable vae slicing for memory efficiency
-                if hasattr(self.pipe, "enable_vae_slicing"):
-                    self.pipe.enable_vae_slicing()
+                # if hasattr(self.pipe, "enable_vae_slicing"):
+                #     self.pipe.enable_vae_slicing()
                     
                 # Enable xformers memory efficient attention if available
                 # try:
@@ -232,8 +232,10 @@ class SDXLWorker(threading.Thread):
                 #     print("Enabled xformers memory efficient attention")
                 # except ImportError:
                 #     print("xformers not available, skipping memory efficient attention")
-            else:
-                self.pipe = self.pipe.to(self.device)
+            # else:
+            #     self.pipe = self.pipe.to(self.device)
+
+            self.pipe = self.pipe.to(self.device)
             
             print(f"FLUX.1-dev model initialized successfully on {self.device} with memory optimizations")
             return True
