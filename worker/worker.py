@@ -122,11 +122,11 @@ class SDXLWorker(threading.Thread):
                 gc.collect()
                 
                 # Move pipe to CPU temporarily if needed
-                if hasattr(self, 'pipe') and self.pipe is not None:
-                    self.pipe = self.pipe.to('cpu')
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    self.pipe = self.pipe.to(self.device)
+                # if hasattr(self, 'pipe') and self.pipe is not None:
+                    # self.pipe = self.pipe.to('cpu')
+                    # torch.cuda.empty_cache()
+                    # gc.collect()
+                    # self.pipe = self.pipe.to(self.device)
                 
                 print(f"Thorough GPU memory cleanup completed on {self.device}")
                 
@@ -235,10 +235,10 @@ class SDXLWorker(threading.Thread):
             # else:
             #     self.pipe = self.pipe.to(self.device)
 
-            import xformers
+            # import xformers
             self.pipe.enable_model_cpu_offload()
-            self.pipe.enable_xformers_memory_efficient_attention()
-            print("Enabled xformers memory efficient attention")
+            # self.pipe.enable_xformers_memory_efficient_attention()
+            # print("Enabled xformers memory efficient attention")
             self.pipe.enable_attention_slicing()
             # self.pipe = self.pipe.to(self.device)
             
