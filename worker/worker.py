@@ -26,9 +26,6 @@ redis_client = redis.Redis(
 # Queue name
 QUEUE_NAME = args.queue_name
 
-# Redis lock for synchronization
-REDIS_LOCK_KEY = f"{QUEUE_NAME}:lock"
-
 # Detect available GPUs
 def get_available_gpus():
     """Detect and return available GPUs with their memory info"""
@@ -67,7 +64,7 @@ def get_available_gpus():
     
     return available_gpus
 
-# Updated SDXLWorker class with separated initialization
+# Worker class for GPU-specific processing
 class SDXLWorker(threading.Thread):
     def __init__(self, gpu_index):
         threading.Thread.__init__(self)
@@ -76,6 +73,7 @@ class SDXLWorker(threading.Thread):
         self.pipe = None
         self.daemon = True  # Thread will exit when main program exits
         self.running = True
+        self.loaded_loras = {}
     
     def run(self):
         """Main worker thread that processes jobs"""
@@ -98,7 +96,6 @@ class SDXLWorker(threading.Thread):
                 # Clear CUDA cache after processing
                 if self.gpu_index >= 0:
                     try:
-                        import torch
                         torch.cuda.empty_cache()
                         print(f"Cleared CUDA cache on {self.device}")
                         
@@ -119,7 +116,417 @@ class SDXLWorker(threading.Thread):
     
     def stop(self):
         """Signal the worker to stop"""
-        self.running = True
+        self.running = False
+
+    def initialize_model(self):
+        """Initialize the FLUX.1-dev model with GGUF quantization on the specific GPU"""
+        try:
+            import torch
+            import os
+            from huggingface_hub import hf_hub_download
+            
+            # Clear CUDA cache before initialization
+            if self.gpu_index >= 0:
+                torch.cuda.empty_cache()
+                torch.cuda.set_device(self.gpu_index)
+            
+            print(f"Using device: {self.device}")
+            
+            # Import diffusers components - do this directly to avoid import errors
+            try:
+                from diffusers.pipelines.flux import pipeline_flux
+                from diffusers.models.transformers import transformer_flux
+                FluxPipeline = pipeline_flux.FluxPipeline
+                FluxTransformer2DModel = transformer_flux.FluxTransformer2DModel
+                from diffusers.configuration_utils import GGUFQuantizationConfig
+            except ImportError:
+                print("Trying standard import path...")
+                from diffusers import FluxPipeline, FluxTransformer2DModel, GGUFQuantizationConfig
+            
+            # Define GGUF model details
+            gguf_repo = "city96/FLUX.1-dev-gguf"
+            gguf_filename = "flux1-dev-Q8_0.gguf"  # Using 8-bit quantization for good balance
+            
+            # Set up cache directory
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "models")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            print(f"Downloading/loading GGUF model from: {gguf_repo}/{gguf_filename}")
+            
+            # Download GGUF file if not already cached
+            gguf_path = hf_hub_download(
+                repo_id=gguf_repo,
+                filename=gguf_filename,
+                cache_dir=cache_dir
+            )
+            
+            print(f"Using GGUF model from: {gguf_path}")
+            
+            # Determine torch dtype based on device
+            if self.gpu_index >= 0:
+                # First try bfloat16, fall back to float16 if not supported
+                if torch.cuda.is_bf16_supported():
+                    torch_dtype = torch.bfloat16
+                    compute_dtype = torch.bfloat16
+                    print("Using bfloat16 precision")
+                else:
+                    torch_dtype = torch.float16
+                    compute_dtype = torch.float16
+                    print("bfloat16 not supported, using float16 precision")
+            else:
+                torch_dtype = torch.float32
+                compute_dtype = torch.float32
+                print("Using float32 precision (CPU mode)")
+            
+            # Create the transformer from the GGUF file
+            print(f"Loading quantized transformer model")
+            transformer = FluxTransformer2DModel.from_single_file(
+                gguf_path,
+                quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
+                torch_dtype=torch_dtype,
+            )
+            
+            print("Quantized transformer model loaded successfully")
+            
+            # Create the full pipeline, replacing the transformer with our quantized version
+            print("Creating pipeline with quantized transformer")
+            self.pipe = FluxPipeline.from_pretrained(
+                "black-forest-labs/FLUX.1-dev",
+                transformer=transformer,
+                torch_dtype=torch_dtype,
+                use_safetensors=True,
+                low_cpu_mem_usage=True,
+            )
+            
+            # Now move to device (two-step approach)
+            print(f"Moving pipeline to {self.device}")
+            self.pipe = self.pipe.to(self.device)
+            
+            # Enable attention slicing for additional memory savings
+            self.pipe.enable_attention_slicing(slice_size="auto")
+            
+            # Try to enable xformers memory efficiency if available
+            try:
+                import xformers
+                self.pipe.enable_xformers_memory_efficient_attention()
+                print("Enabled xformers memory-efficient attention")
+            except ImportError:
+                print("Xformers not available, using standard attention")
+            
+            # Clear cache after model loading
+            if self.gpu_index >= 0:
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, 'memory_allocated'):
+                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                    print(f"GPU {self.gpu_index} memory after loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
+            print(f"FLUX.1-dev GGUF quantized model initialized successfully on {self.device}")
+            return True
+            
+        except Exception as e:
+            print(f"Error initializing GGUF quantized model: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _load_lora_models(self, lora_models, lora_strengths):
+        """
+        Load LoRA models into the pipeline
+        
+        Args:
+            lora_models (list): List of LoRA model names
+            lora_strengths (list): List of LoRA strength values
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            import os
+            from pathlib import Path
+            from storage import S3Storage
+            
+            # Track loaded LoRAs
+            if not hasattr(self, 'loaded_loras'):
+                self.loaded_loras = {}
+                
+            print(f"Loading LoRA models: {lora_models} with strengths: {lora_strengths}")
+            
+            # Check if the same models with same strengths are already loaded
+            current_loras = {model: strength for model, strength in zip(lora_models, lora_strengths)}
+            if self.loaded_loras == current_loras:
+                print("Same LoRA models already loaded with same strengths, skipping reload")
+                return True
+                
+            # Initialize storage handler
+            storage = S3Storage()
+            
+            # Define local directory for LoRA models
+            lora_dir = Path("./loras")
+            
+            # Download LoRA models from S3
+            downloaded_files = storage.download_specific_files(
+                lora_models,
+                "loras/",
+                str(lora_dir)
+            )
+            
+            if len(downloaded_files) != len(lora_models):
+                print(f"Warning: Not all LoRA models were downloaded. Expected {len(lora_models)}, got {len(downloaded_files)}")
+            
+            # Unload any existing LoRA weights
+            try:
+                if hasattr(self.pipe, "unload_lora_weights"):
+                    print("Unloading previous LoRA weights")
+                    self.pipe.unload_lora_weights()
+            except Exception as e:
+                print(f"Error unloading LoRA weights: {e}")
+            
+            # Load each LoRA with cross_attention_kwargs to apply scale directly
+            for i, model_name in enumerate(lora_models):
+                try:
+                    if not model_name.endswith('.safetensors'):
+                        file_name = f"{model_name}.safetensors"
+                    else:
+                        file_name = model_name
+                        
+                    model_path = lora_dir / file_name
+                    if model_path.exists():
+                        strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
+                        print(f"Loading LoRA {model_name} with strength {strength}")
+                        
+                        # Load the LoRA weights with cross_attention_kwargs to apply scale directly
+                        self.pipe.load_lora_weights(
+                            str(model_path),
+                            cross_attention_kwargs={"scale": strength}
+                        )
+                    else:
+                        print(f"Warning: LoRA file not found: {model_path}")
+                except Exception as e:
+                    print(f"Error loading LoRA {model_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Update loaded_loras dictionary
+            self.loaded_loras = current_loras
+            print("LoRA loading complete")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading LoRA models: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def process_job(self, job_id):
+        """Process a single job"""
+        try:
+            print(f"Processing job {job_id} on {self.device}")
+            
+            # Import S3Storage class
+            from storage import S3Storage
+            
+            # Initialize storage handler
+            storage = S3Storage()
+            
+            # Get job data from Redis
+            job_data_raw = redis_client.get(f"job:{job_id}")
+            if not job_data_raw:
+                print(f"Job {job_id} not found in Redis")
+                return False
+            
+            # Parse job data
+            job_data = json.loads(job_data_raw)
+            
+            # Update job status to processing
+            job_data["status"] = "processing"
+            job_data["device"] = self.device
+            redis_client.set(f"job:{job_id}", json.dumps(job_data))
+            
+            # Extract parameters with defaults, handling string inputs
+            prompt = job_data.get("prompt", "")
+            negative_prompt = job_data.get("negative_prompt", "")
+            
+            # Handle LoRA models and strengths
+            lora_models = []
+            lora_strengths = []
+            
+            if "lora_model" in job_data and job_data["lora_model"]:
+                lora_models = job_data["lora_model"].split(',')
+                lora_models = [model.strip() for model in lora_models]
+                
+                if "lora_strength" in job_data and job_data["lora_strength"]:
+                    lora_strengths = job_data["lora_strength"].split(',')
+                    lora_strengths = [strength.strip() for strength in lora_strengths]
+                    
+                    # Ensure we have a strength value for each model
+                    if len(lora_strengths) < len(lora_models):
+                        lora_strengths.extend(['1.0'] * (len(lora_models) - len(lora_strengths)))
+            
+            # Load LoRA models if specified
+            if lora_models:
+                lora_success = self._load_lora_models(lora_models, lora_strengths)
+                if not lora_success:
+                    print("Warning: Failed to load some LoRA models. Continuing with available models.")
+            
+            # Handle height/width as strings or integers
+            try:
+                height = int(job_data.get("height", 1024))
+            except (TypeError, ValueError):
+                height = 1024
+                
+            try:
+                width = int(job_data.get("width", 1024))
+            except (TypeError, ValueError):
+                width = 1024
+                
+            # Handle num_inference_steps as string or integer
+            try:
+                num_inference_steps = int(job_data.get("num_inference_steps", 20))
+            except (TypeError, ValueError):
+                num_inference_steps = 20
+                
+            # Handle guidance_scale as string or float
+            try:
+                guidance_scale = float(job_data.get("guidance_scale", 7.5))
+            except (TypeError, ValueError):
+                guidance_scale = 7.5
+                
+            # Get number of images
+            num_images = min(job_data.get("num_images", 1), 4)  # Limit to 4 images max
+            
+            # Handle seed (null means random)
+            seed = job_data.get("seed")
+            if seed is None or seed == "null":
+                seed = int(time.time())
+            else:
+                try:
+                    seed = int(seed)
+                except (TypeError, ValueError):
+                    seed = int(time.time())
+            
+            # Record start time
+            start_time = time.time()
+            
+            # Set up generator for reproducibility
+            generator = None
+            if seed is not None:
+                generator = torch.Generator(device=self.device).manual_seed(seed)
+            
+            # Generate the image(s) with memory optimization
+            try:
+                # Clear cache before generation
+                if self.gpu_index >= 0:
+                    torch.cuda.empty_cache()
+                    
+                # Print memory usage before generation
+                if self.gpu_index >= 0 and hasattr(torch.cuda, 'memory_allocated'):
+                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                    print(f"Pre-generation GPU {self.gpu_index} memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                
+                # Generate with additional memory-saving options
+                images = self.pipe(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    height=height,
+                    width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    num_images_per_prompt=num_images,
+                    generator=generator,
+                    # Add memory optimization options
+                    use_resolution_binning=True
+                ).images
+                
+                # Clear cache immediately after generation
+                if self.gpu_index >= 0:
+                    torch.cuda.empty_cache()
+                    
+                # Print memory usage after generation
+                if self.gpu_index >= 0 and hasattr(torch.cuda, 'memory_allocated'):
+                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
+                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
+                    print(f"Post-generation GPU {self.gpu_index} memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            except torch.cuda.OutOfMemoryError as oom:
+                print(f"Out of memory error while generating images: {oom}")
+                # Try to recover by clearing cache and freeing memory
+                if self.gpu_index >= 0:
+                    torch.cuda.empty_cache()
+                    # Try to remove some references to free memory
+                    if hasattr(self, 'loaded_loras'):
+                        self.loaded_loras = {}
+                # Propagate the error
+                raise
+            
+            # Calculate generation time
+            generation_time = time.time() - start_time
+            print(f"Generated {len(images)} images in {generation_time:.2f}s on {self.device}")
+            
+            # Upload images to S3
+            image_urls = storage.upload_images(images, job_id)
+            
+            # If configured to include base64, prepare those too
+            base64_images = None
+            if storage.should_include_base64():
+                base64_images = []
+                for image in images:
+                    buffered = BytesIO()
+                    image.save(buffered, format="PNG")
+                    img_str = base64.b64encode(buffered.getvalue()).decode()
+                    base64_images.append(img_str)
+            
+            # Update job with result
+            job_data.update({
+                "status": "completed",
+                "result": {
+                    "image_urls": image_urls,
+                    "base64_images": base64_images,
+                    "parameters": {
+                        "prompt": prompt,
+                        "negative_prompt": negative_prompt,
+                        "lora_model": lora_models if lora_models else None,
+                        "lora_strength": lora_strengths if lora_strengths else None,
+                        "height": height,
+                        "width": width,
+                        "num_inference_steps": num_inference_steps,
+                        "guidance_scale": guidance_scale,
+                        "seed": seed,
+                    },
+                    "generation_time": generation_time,
+                    "device": self.device
+                },
+                "completedAt": time.time()
+            })
+            
+            # Save updated job data back to Redis
+            redis_client.set(f"job:{job_id}", json.dumps(job_data))
+            print(f"Job {job_id} completed successfully on {self.device}")
+            
+            # Clean up
+            storage.cleanup()
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error processing job {job_id} on {self.device}: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            try:
+                # Update job status to failed
+                job_data = json.loads(redis_client.get(f"job:{job_id}"))
+                job_data.update({
+                    "status": "failed",
+                    "error": str(e),
+                    "device": self.device,
+                    "completedAt": time.time()
+                })
+                redis_client.set(f"job:{job_id}", json.dumps(job_data))
+            except Exception as update_error:
+                print(f"Error updating job status: {update_error}")
+            
+            return False
 
 # Modified main function for sequential GPU initialization
 def main():
