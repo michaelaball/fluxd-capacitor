@@ -174,13 +174,12 @@ class SDXLWorker(threading.Thread):
                 compute_dtype = torch.float32
                 print("Using float32 precision (CPU mode)")
             
-            # Create the transformer from the GGUF file directly on the target device
-            print(f"Loading quantized transformer model to {self.device}")
+            # Create the transformer from the GGUF file
+            print(f"Loading quantized transformer model")
             transformer = FluxTransformer2DModel.from_single_file(
                 gguf_path,
                 quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
                 torch_dtype=torch_dtype,
-                device_map=self.device,  # Directly load to the target device
             )
             
             print("Quantized transformer model loaded successfully")
@@ -193,8 +192,11 @@ class SDXLWorker(threading.Thread):
                 torch_dtype=torch_dtype,
                 use_safetensors=True,
                 low_cpu_mem_usage=True,
-                device_map=self.device,  # Directly load to the target device
             )
+            
+            # Now move to device (two-step approach)
+            print(f"Moving pipeline to {self.device}")
+            self.pipe = self.pipe.to(self.device)
             
             # Enable attention slicing for additional memory savings
             self.pipe.enable_attention_slicing(slice_size="auto")
