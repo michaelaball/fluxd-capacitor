@@ -401,8 +401,8 @@ class SDXLWorker(threading.Thread):
             
             # Set up generator for reproducibility
             generator = None
-            if seed is not None:
-                generator = torch.Generator(device=self.device).manual_seed(seed)
+            # if seed is not None:
+            #     generator = torch.Generator(device=self.device).manual_seed(seed)
             
             # Generate the image(s)
             images = self.pipe(
