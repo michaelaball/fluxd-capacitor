@@ -153,53 +153,6 @@ class SDXLWorker(threading.Thread):
                 import traceback
                 traceback.print_exc()
 
-    def _manage_lora_weights(self, new_loras=None, new_strengths=None):
-        """
-        Intelligently manage LoRA weights - only unload if necessary
-        
-        Args:
-            new_loras: List of new LoRA models to load, or None if no new LoRAs
-            new_strengths: List of corresponding strengths for new LoRAs
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            # If no new LoRAs are specified and no LoRAs are currently loaded, do nothing
-            if not new_loras and not self.loaded_loras:
-                return True
-                
-            # If new LoRAs are different from current ones, unload current LoRAs
-            current_loras = {model: strength for model, strength in 
-                             zip(new_loras or [], new_strengths or [])}
-            
-            if current_loras != self.loaded_loras:
-                # Only unload if we need to change LoRAs
-                print("LoRA configuration changed, unloading current LoRAs")
-                if hasattr(self.pipe, "unload_lora_weights"):
-                    self.pipe.unload_lora_weights()
-                    
-                    # Additional cleanup for adapters
-                    if hasattr(self.pipe, "text_encoder") and hasattr(self.pipe.text_encoder, "delete_adapters"):
-                        self.pipe.text_encoder.delete_adapters()
-                    if hasattr(self.pipe, "unet") and hasattr(self.pipe.unet, "delete_adapters"):
-                        self.pipe.unet.delete_adapters()
-                    
-                    # Reset loaded_loras tracking only if we actually unloaded
-                    self.loaded_loras = {}
-                    print("Previous LoRA weights unloaded")
-            else:
-                # LoRAs are the same, keep them loaded
-                print("Keeping current LoRAs loaded (configuration unchanged)")
-                return True
-                
-        except Exception as e:
-            print(f"Error managing LoRA weights: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-        
-        return True
 
     def initialize_model(self):
         """Initialize the FLUX.1-dev model on the specific GPU with memory optimizations"""
@@ -315,10 +268,6 @@ class SDXLWorker(threading.Thread):
                 print("Unloading previous LoRA weights")
                 self.pipe.unload_lora_weights()
             
-            # Keep track of adapter names and weights for scaling
-            adapter_names = []
-            adapter_weights = []
-            
             # Load each LoRA
             for i, model_name in enumerate(lora_models):
                 if not model_name.endswith('.safetensors'):
@@ -331,39 +280,19 @@ class SDXLWorker(threading.Thread):
                     strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
                     print(f"Loading LoRA {model_name} with strength {strength}")
                     
-                    # Load the LoRA weights with default adapter name
-                    # Load with cross_attention_kwargs to apply scale directly
-                    self.pipe.load_lora_weights(
-                        str(model_path),
-                        cross_attention_kwargs={"scale": strength}
-                    )
-                    
-                    # The adapter name might be assigned as "default_i" where i is the index
-                    # We'll handle this in a separate step by checking available adapters
+                    try:
+                        # Load the LoRA weights
+                        self.pipe.load_lora_weights(
+                            str(model_path),
+                            cross_attention_kwargs={"scale": strength}
+                        )
+                    except Exception as load_error:
+                        print(f"Error loading LoRA {model_name}: {load_error}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
                 else:
                     print(f"Warning: LoRA file not found: {model_path}")
-            
-            # Get available adapters and set their weights
-            try:
-                # Different models store adapters in different ways
-                if hasattr(self.pipe, "get_active_adapters"):
-                    adapters = self.pipe.get_active_adapters()
-                    print(f"Available adapters: {adapters}")
-                    
-                    if adapters:
-                        # Set all adapters to full strength (they already have scale applied)
-                        self.pipe.set_adapters(adapters, adapter_weights=[1.0] * len(adapters))
-                elif hasattr(self.pipe.unet, "peft_config"):
-                    # Print available adapters from PEFT config
-                    if hasattr(self.pipe.unet, "peft_config"):
-                        adapters = list(self.pipe.unet.peft_config.keys())
-                        print(f"UNet adapters: {adapters}")
-                    
-                    if hasattr(self.pipe.text_encoder, "peft_config"):
-                        adapters = list(self.pipe.text_encoder.peft_config.keys())
-                        print(f"Text encoder adapters: {adapters}")
-            except Exception as e:
-                print(f"Error identifying or setting adapters: {e}")
             
             # Update loaded_loras dictionary
             self.loaded_loras = current_loras
@@ -375,7 +304,6 @@ class SDXLWorker(threading.Thread):
             import traceback
             traceback.print_exc()
             return False
-    
 
     def process_job(self, job_id):
         """Process a single job"""
