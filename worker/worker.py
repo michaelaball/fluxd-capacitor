@@ -149,6 +149,10 @@ class SDXLWorker(threading.Thread):
             raise
             # Add this code to the SDXLWorker class in worker.py
 
+    
+    # Add this code to the SDXLWorker class in worker.py
+
+
     # Add this code to the SDXLWorker class in worker.py
 
     def _load_lora_models(self, lora_models, lora_strengths):
@@ -167,6 +171,7 @@ class SDXLWorker(threading.Thread):
             from pathlib import Path
             from storage import S3Storage
             
+            # Track loaded LoRAs
             if not hasattr(self, 'loaded_loras'):
                 self.loaded_loras = {}
                 
@@ -195,57 +200,71 @@ class SDXLWorker(threading.Thread):
                 print(f"Warning: Not all LoRA models were downloaded. Expected {len(lora_models)}, got {len(downloaded_files)}")
             
             # Unload any existing LoRA weights
-            try:
-                if hasattr(self.pipe, "unload_lora_weights"):
-                    print("Unloading previous LoRA weights")
-                    self.pipe.unload_lora_weights()
-            except Exception as e:
-                print(f"Error unloading LoRA weights: {e}")
+            if hasattr(self.pipe, "unload_lora_weights"):
+                print("Unloading previous LoRA weights")
+                self.pipe.unload_lora_weights()
             
-            # Load each adapter one by one
+            # Keep track of adapter names and weights for scaling
+            adapter_names = []
+            adapter_weights = []
+            
+            # Load each LoRA
             for i, model_name in enumerate(lora_models):
-                try:
-                    if not model_name.endswith('.safetensors'):
-                        file_name = f"{model_name}.safetensors"
-                    else:
-                        file_name = model_name
-                        
-                    model_path = lora_dir / file_name
-                    if model_path.exists():
-                        strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
-                        print(f"Loading LoRA {model_name} from {model_path} with strength {strength}")
-                        
-                        # The FluxPipeline may use a different API than standard diffusers
-                        # Try different loading methods
-                        adapter_name = Path(file_name).stem
-                        
-                        if hasattr(self.pipe, "load_lora_weights"):
-                            self.pipe.load_lora_weights(str(model_path))
-                            
-                            if hasattr(self.pipe, "set_adapters"):
-                                # For newer diffusers
-                                self.pipe.set_adapters([adapter_name], adapter_weights=[strength])
-                            elif hasattr(self.pipe, "fuse_lora"):
-                                # For some versions that use fuse_lora
-                                self.pipe.fuse_lora(lora_scale=strength)
-                            else:
-                                print(f"Loaded LoRA {model_name} but couldn't set weight {strength}")
-                    else:
-                        print(f"Warning: LoRA file not found: {model_path}")
-                except Exception as e:
-                    print(f"Error loading LoRA {model_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                if not model_name.endswith('.safetensors'):
+                    file_name = f"{model_name}.safetensors"
+                else:
+                    file_name = model_name
+                    
+                model_path = lora_dir / file_name
+                if model_path.exists():
+                    strength = float(lora_strengths[i]) if i < len(lora_strengths) else 1.0
+                    print(f"Loading LoRA {model_name} with strength {strength}")
+                    
+                    # Load the LoRA weights with default adapter name
+                    # Load with cross_attention_kwargs to apply scale directly
+                    self.pipe.load_lora_weights(
+                        str(model_path),
+                        cross_attention_kwargs={"scale": strength}
+                    )
+                    
+                    # The adapter name might be assigned as "default_i" where i is the index
+                    # We'll handle this in a separate step by checking available adapters
+                else:
+                    print(f"Warning: LoRA file not found: {model_path}")
+            
+            # Get available adapters and set their weights
+            try:
+                # Different models store adapters in different ways
+                if hasattr(self.pipe, "get_active_adapters"):
+                    adapters = self.pipe.get_active_adapters()
+                    print(f"Available adapters: {adapters}")
+                    
+                    if adapters:
+                        # Set all adapters to full strength (they already have scale applied)
+                        self.pipe.set_adapters(adapters, adapter_weights=[1.0] * len(adapters))
+                elif hasattr(self.pipe.unet, "peft_config"):
+                    # Print available adapters from PEFT config
+                    if hasattr(self.pipe.unet, "peft_config"):
+                        adapters = list(self.pipe.unet.peft_config.keys())
+                        print(f"UNet adapters: {adapters}")
+                    
+                    if hasattr(self.pipe.text_encoder, "peft_config"):
+                        adapters = list(self.pipe.text_encoder.peft_config.keys())
+                        print(f"Text encoder adapters: {adapters}")
+            except Exception as e:
+                print(f"Error identifying or setting adapters: {e}")
             
             # Update loaded_loras dictionary
             self.loaded_loras = current_loras
-            
+            print("LoRA loading complete")
             return True
+            
         except Exception as e:
             print(f"Error loading LoRA models: {e}")
             import traceback
             traceback.print_exc()
             return False
+    
     def process_job(self, job_id):
         """Process a single job"""
         try:
