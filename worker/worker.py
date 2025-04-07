@@ -216,7 +216,7 @@ class SDXLWorker(threading.Thread):
             
             # Apply memory optimizations
             if self.gpu_index >= 0:
-                self.pipe.enable_model_cpu_offload()
+                # self.pipe.enable_model_cpu_offload()
                 
                 # Enable attention slicing to reduce memory usage
                 self.pipe.enable_attention_slicing()
