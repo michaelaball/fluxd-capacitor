@@ -36,7 +36,6 @@ def get_available_gpus():
     for i in range(torch.cuda.device_count()):
         try:
             # Verify GPU is usable
-            torch.cuda.set_device(i)
             props = torch.cuda.get_device_properties(i)
             free_mem = torch.cuda.mem_get_info(i)[0] / (1024 ** 3)
             gpus.append({'index': i, 'name': props.name, 'free_memory_gb': free_mem})
@@ -61,7 +60,6 @@ def run_worker(gpu_index, queue_name, polling_interval):
     redis_client = create_redis_client()
 
     print(f"[GPU {gpu_index}] Worker started on {device}")
-    torch.cuda.set_device(0)  # 0 because of CUDA_VISIBLE_DEVICES remapping
 
     # Importing inside the function to ensure proper process isolation
     from diffusers import FluxPipeline
@@ -311,6 +309,9 @@ def run_worker(gpu_index, queue_name, polling_interval):
 
 def main():
     try:
+        # Set multiprocessing start method to spawn
+        multiprocessing.set_start_method('spawn')
+
         # Verify Redis connection
         redis_client = create_redis_client()
         redis_client.ping()
