@@ -102,7 +102,7 @@ class SDXLWorker:
             )
             
             # Apply memory optimizations
-            self.pipe.enable_model_cpu_offload()
+            # self.pipe.enable_model_cpu_offload()
             
             print(f"FLUX.1-dev model initialized successfully on {self.device} with memory optimizations")
             return True
