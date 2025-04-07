@@ -21,7 +21,9 @@ args = parser.parse_args()
 # Art styles mapping
 ART_STYLES = {
     "Studio Ghibli": "in the style of Studio Ghibli anime, soft watercolor textures, dreamlike pastel colors, hand-drawn animation aesthetic, intricate background details",
-    "Digital Synthwave": "in the style of retrowave synthwave digital art, neon color palette, 80s cyberpunk aesthetic, vibrant purple and pink gradients, geometric landscape with retro futuristic elements"
+    "Digital Synthwave": "in the style of retrowave synthwave digital art, neon color palette, 80s cyberpunk aesthetic, vibrant purple and pink gradients, geometric landscape with retro futuristic elements",
+    "Art Deco": "in the style of art deco",
+    "Anime": "in the style of a Japanese anime cartoon"
 }
 
 
@@ -250,7 +252,9 @@ def run_worker(gpu_index, queue_name, polling_interval):
             # Image generation
             stylized_prompts = [
                 f"{prompt}, {ART_STYLES['Studio Ghibli']}",
-                f"{prompt}, {ART_STYLES['Digital Synthwave']}"
+                f"{prompt}, {ART_STYLES['Digital Synthwave']}",
+                f"{prompt}, {ART_STYLES['Art Deco']}",
+                f"{prompt}, {ART_STYLES['Anime']}",
             ]
 
             start_time = time.time()
