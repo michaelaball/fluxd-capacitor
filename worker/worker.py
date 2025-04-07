@@ -226,12 +226,12 @@ class SDXLWorker(threading.Thread):
                     self.pipe.enable_vae_slicing()
                     
                 # Enable xformers memory efficient attention if available
-                try:
-                    import xformers
-                    self.pipe.enable_xformers_memory_efficient_attention()
-                    print("Enabled xformers memory efficient attention")
-                except ImportError:
-                    print("xformers not available, skipping memory efficient attention")
+                # try:
+                #     import xformers
+                #     self.pipe.enable_xformers_memory_efficient_attention()
+                #     print("Enabled xformers memory efficient attention")
+                # except ImportError:
+                #     print("xformers not available, skipping memory efficient attention")
             else:
                 self.pipe = self.pipe.to(self.device)
             
