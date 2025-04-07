@@ -354,6 +354,7 @@ class SDXLWorker(threading.Thread):
             traceback.print_exc()
             return False
     
+
     def process_job(self, job_id):
         """Process a single job"""
         try:
@@ -383,9 +384,6 @@ class SDXLWorker(threading.Thread):
             prompt = job_data.get("prompt", "")
             negative_prompt = job_data.get("negative_prompt", "")
             
-            # Thorough cleanup BEFORE loading LoRAs
-            self.cleanup_gpu_memory()
-            
             # Handle LoRA models and strengths
             lora_models = []
             lora_strengths = []
@@ -402,22 +400,11 @@ class SDXLWorker(threading.Thread):
                     if len(lora_strengths) < len(lora_models):
                         lora_strengths.extend(['1.0'] * (len(lora_models) - len(lora_strengths)))
             
-            # Intelligently manage LoRA weights - only unload if needed
-            self._manage_lora_weights(lora_models, lora_strengths)
-            
             # Load LoRA models if specified
             if lora_models:
-                # Check if we need to load - either we have no LoRAs loaded, or different ones
-                current_loras = {model: strength for model, strength in 
-                                 zip(lora_models, lora_strengths)}
-                
-                if current_loras != self.loaded_loras:
-                    print(f"Loading new LoRA configuration: {current_loras}")
-                    lora_success = self._load_lora_models(lora_models, lora_strengths)
-                    if not lora_success:
-                        print("Warning: Failed to load some LoRA models. Continuing with available models.")
-                else:
-                    print("Reusing already loaded LoRAs with same configuration")
+                lora_success = self._load_lora_models(lora_models, lora_strengths)
+                if not lora_success:
+                    print("Warning: Failed to load some LoRA models. Continuing with available models.")
             
             # Handle height/width as strings or integers
             try:
@@ -463,44 +450,17 @@ class SDXLWorker(threading.Thread):
             if seed is not None:
                 generator = torch.Generator(device=self.device).manual_seed(seed)
             
-            # Generate the image(s) with memory optimization
-            try:
-                # Thorough cleanup before generation
-                self.cleanup_gpu_memory()
-                    
-                # Print memory usage before generation
-                if self.gpu_index >= 0 and hasattr(torch.cuda, 'memory_allocated'):
-                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
-                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
-                    print(f"Pre-generation GPU {self.gpu_index} memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-                
-                # Generate with additional memory-saving options
-                images = self.pipe(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    height=height,
-                    width=width,
-                    num_inference_steps=num_inference_steps,
-                    guidance_scale=guidance_scale,
-                    num_images_per_prompt=num_images,
-                    generator=generator
-                ).images
-                
-                # Thorough cleanup after generation
-                self.cleanup_gpu_memory()
-                
-                # Print memory usage after generation
-                if self.gpu_index >= 0 and hasattr(torch.cuda, 'memory_allocated'):
-                    allocated = torch.cuda.memory_allocated(self.gpu_index) / (1024**3)
-                    reserved = torch.cuda.memory_reserved(self.gpu_index) / (1024**3)
-                    print(f"Post-generation GPU {self.gpu_index} memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
-                
-            except torch.cuda.OutOfMemoryError as oom:
-                print(f"Out of memory error while generating images: {oom}")
-                # Try to recover with extra aggressive memory cleanup
-                self.cleanup_gpu_memory()
-                # Propagate the error
-                raise
+            # Generate the image(s)
+            images = self.pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                num_images_per_prompt=num_images,
+                generator=generator
+            ).images
             
             # Calculate generation time
             generation_time = time.time() - start_time
@@ -549,23 +509,12 @@ class SDXLWorker(threading.Thread):
             # Clean up
             storage.cleanup()
             
-            # Final cleanup before returning
-            self.cleanup_gpu_memory()
-            # Do NOT unload LoRAs here - we want to keep them for the next job if it uses the same ones
-            
             return True
             
         except Exception as e:
             print(f"Error processing job {job_id} on {self.device}: {e}")
             import traceback
             traceback.print_exc()
-            
-            # Attempt cleanup even after errors
-            try:
-                self.cleanup_gpu_memory()
-                # Do NOT unload LoRAs here - we want to keep them for potential reuse
-            except:
-                pass
             
             try:
                 # Update job status to failed
