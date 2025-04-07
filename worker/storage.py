@@ -215,7 +215,7 @@ class S3Storage:
             
             # Clean up local file
             local_path.unlink()
-            
+            print("uploaded image: "+url)
             return url
         
         except Exception as e:
