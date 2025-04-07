@@ -308,7 +308,29 @@ def run_worker(gpu_index, queue_name, polling_interval):
             print("Batch Prompts:")
             for i, prompt in enumerate(prompts, 1):
                 print(f"  Job {i}: {prompt}")
+            # Get LoRA models and strengths from the first job
+            lora_models = first_job.get("lora_model", "")
+            lora_strengths = first_job.get("lora_strength", "")
 
+            # Convert string parameters to lists if needed
+            if isinstance(lora_models, str) and lora_models:
+                lora_models = [lora_models]
+            elif not lora_models:
+                lora_models = []
+                
+            if isinstance(lora_strengths, str) and lora_strengths:
+                lora_strengths = [lora_strengths]
+            elif not lora_strengths:
+                lora_strengths = []
+
+            # Load LoRA models if specified
+            if lora_models:
+                print(f"[GPU {gpu_index}] Loading LoRA models: {lora_models}")
+                if not worker_ctx._load_lora_models(lora_models, lora_strengths):
+                    print(f"[GPU {gpu_index}] Failed to load LoRA models")
+                    # Continue anyway, will use base model
+                    
+            # Now generate the images
             images = worker_ctx.pipe(
                 prompt=prompts,
                 negative_prompt=negative_prompts,
