@@ -155,16 +155,16 @@ class SDXLWorker(threading.Thread):
             cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "models")
             os.makedirs(cache_dir, exist_ok=True)
             
-            print(f"Downloading/loading GGUF model from: {gguf_repo}/{gguf_filename}")
+            # print(f"Downloading/loading GGUF model from: {gguf_repo}/{gguf_filename}")
             
-            # Download GGUF file if not already cached
-            gguf_path = hf_hub_download(
-                repo_id=gguf_repo,
-                filename=gguf_filename,
-                cache_dir=cache_dir
-            )
+            # # Download GGUF file if not already cached
+            # gguf_path = hf_hub_download(
+            #     repo_id=gguf_repo,
+            #     filename=gguf_filename,
+            #     cache_dir=cache_dir
+            # )
             
-            print(f"Using GGUF model from: {gguf_path}")
+            # print(f"Using GGUF model from: {gguf_path}")
             
             # Determine torch dtype based on device
             if self.gpu_index >= 0:
@@ -183,20 +183,21 @@ class SDXLWorker(threading.Thread):
                 print("Using float32 precision (CPU mode)")
             
             # Create the transformer from the GGUF file
-            print(f"Loading quantized transformer model")
-            transformer = FluxTransformer2DModel.from_single_file(
-                gguf_path,
-                quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
-                torch_dtype=torch_dtype,
-            )
+            # print(f"Loading quantized transformer model")
+            # transformer = FluxTransformer2DModel.from_single_file(
+            #     gguf_path,
+            #     quantization_config=GGUFQuantizationConfig(compute_dtype=compute_dtype),
+            #     torch_dtype=torch_dtype,
+            # )
             
-            print("Quantized transformer model loaded successfully")
+            # print("Quantized transformer model loaded successfully")
             
             # Create the full pipeline, replacing the transformer with our quantized version
-            print("Creating pipeline with quantized transformer")
+            # print("Creating pipeline with quantized transformer")
+            print("Create pipeline")
             self.pipe = FluxPipeline.from_pretrained(
                 "black-forest-labs/FLUX.1-dev",
-                transformer=transformer,
+                # transformer=transformer,
                 torch_dtype=torch_dtype,
                 use_safetensors=True,
                 low_cpu_mem_usage=True,
