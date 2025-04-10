@@ -200,8 +200,9 @@ def run_worker(gpu_index, queue_name, polling_interval):
         """
         # Pull first job to set the baseline
         first_job_id = redis_client.lpop(queue_name)
+        # Safe return if nothing to unpack
         if not first_job_id:
-            return []
+            return [], []
         
         # Fetch first job details
         first_job_data = json.loads(redis_client.get(f"job:{first_job_id}"))
