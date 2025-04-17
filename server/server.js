@@ -55,7 +55,7 @@ app.post('/v6/images/text2img', async (req, res) => {
     res.status(202).json({
       jobId,
       status: 'processing',
-      fetch_result: `https://${process.env.RUNPOD_POD_ID}-3000.proxy.runpod.net/status/${jobId}`,
+      fetch_result: `https://relieved-violently-titmouse.ngrok-free.app/status/${jobId}`,
       message: 'Job added to queue'
     });
   } catch (error) {
